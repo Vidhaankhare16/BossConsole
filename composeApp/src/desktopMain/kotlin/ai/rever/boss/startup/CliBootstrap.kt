@@ -1,6 +1,7 @@
 package ai.rever.boss.startup
 
 import ai.rever.boss.cli.configureHeadlessLogging
+import ai.rever.boss.cli.configureHeadlessOutputEncoding
 import ai.rever.boss.cli.createBossCLI
 import ai.rever.boss.llm.RisaLlmTokenCommand
 import ai.rever.boss.utils.DeepLinkHandler
@@ -62,6 +63,7 @@ object CliBootstrap {
             // Headless CLI commands (status, mcp, completion, --help) target the running
             // instance or generate output headlessly.
             isHeadlessCli(args) -> {
+                configureHeadlessOutputEncoding()
                 configureHeadlessLogging()
                 try {
                     createBossCLI().main(args)
