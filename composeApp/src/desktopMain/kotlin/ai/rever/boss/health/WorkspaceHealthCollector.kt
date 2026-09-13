@@ -1,6 +1,7 @@
 package ai.rever.boss.health
 
 import ai.rever.boss.components.plugin.PluginHealthSnapshot
+import ai.rever.boss.config.ChromiumAutoDownloader
 import ai.rever.boss.mcp.McpToolRegistryImpl
 import ai.rever.boss.plugin.browser.EngineInitError
 import ai.rever.boss.plugin.browser.FluckEngine
@@ -73,7 +74,7 @@ internal class WorkspaceHealthCollector(
  * closed and will be recreated on next use.
  */
 internal fun currentBrowserEngineHealth(): BrowserEngineHealth {
-    if (FluckEngine.resolveEngineDir() == null) {
+    if (FluckEngine.resolveEngineDir(cacheHealthy = ChromiumAutoDownloader.isChromiumInstalledReadOnly()) == null) {
         return BrowserEngineHealth.NotInstalled(FluckEngine.noUsableEngineReason())
     }
     val initError = FluckEngine.initError

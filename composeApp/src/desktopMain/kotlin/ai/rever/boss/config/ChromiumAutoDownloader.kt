@@ -184,8 +184,18 @@ object ChromiumAutoDownloader {
      * Check if Chromium is already installed, valid, and matches the effective
      * engine version (Settings pin, else the bundled JxBrowser version).
      */
-    fun isChromiumInstalled(): Boolean {
-        val dir = getChromiumDir()
+    fun isChromiumInstalled(): Boolean = chromiumInstalledAt(recordRepair = ::recordRepairAttempt)
+
+    /** Check the cache without consuming the startup repair attempt. Safe for status queries. */
+    internal fun isChromiumInstalledReadOnly(): Boolean = chromiumInstalledAt(recordRepair = {})
+
+    internal fun chromiumInstalledAt(
+        dir: Path = getChromiumDir(),
+        requiredVersion: String = effectiveVersion,
+        isMac: Boolean = System.getProperty("os.name").lowercase().contains("mac"),
+        repairAttempted: () -> Boolean = ::repairAlreadyAttempted,
+        recordRepair: () -> Unit,
+    ): Boolean {
         if (!dir.toFile().exists()) return false
 
         // Check executable.name exists (required by JxBrowser)
@@ -200,13 +210,13 @@ object ChromiumAutoDownloader {
         }
 
         val installedVersion = versionFile.readText().trim()
-        if (installedVersion != effectiveVersion) {
+        if (installedVersion != requiredVersion) {
             logger.info(
                 LogCategory.BROWSER,
                 "Chromium version mismatch",
                 mapOf(
                     "installed" to installedVersion,
-                    "required" to effectiveVersion,
+                    "required" to requiredVersion,
                 ),
             )
             return false
@@ -214,7 +224,7 @@ object ChromiumAutoDownloader {
 
         // On macOS, verify the executable has proper permissions
         // This catches cached Chromium from older versions that didn't set execute bit correctly
-        if (System.getProperty("os.name").lowercase().contains("mac")) {
+        if (isMac) {
             val executableName = executableNameFile.readText().trim()
             // executable.name holds the bundle name without its suffix (the branding
             // workflow writes `basename "$APP_BUNDLE" .app`), so the directory on
@@ -233,18 +243,18 @@ object ChromiumAutoDownloader {
                 // directory on EVERY launch and re-fetch ~160 MB forever, silently.
                 // The marker lives outside the engine directory because a
                 // re-download replaces that whole directory.
-                if (repairAlreadyAttempted()) {
+                if (repairAttempted()) {
                     logger.warn(
                         LogCategory.BROWSER,
                         "Chromium still registers itself as a browser after a re-download; keeping it",
-                        mapOf("version" to effectiveVersion),
+                        mapOf("version" to requiredVersion),
                     )
                 } else {
-                    recordRepairAttempt()
+                    recordRepair()
                     logger.info(
                         LogCategory.BROWSER,
                         "Cached Chromium still registers itself as a browser, will re-download",
-                        mapOf("version" to effectiveVersion),
+                        mapOf("version" to requiredVersion),
                     )
                     return false
                 }

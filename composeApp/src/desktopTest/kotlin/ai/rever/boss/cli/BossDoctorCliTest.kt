@@ -106,6 +106,29 @@ class BossDoctorCliTest {
     }
 
     @Test
+    fun `doctor qualifies an incomplete report and respects degraded without details`() {
+        serve("""{"running":true,"health":{"degraded":false,"findings":[],"unchecked":["plugins"]}}""")
+        assertEquals(0, exitOf("doctor"))
+        assertTrue(out.toString().contains("No problems found in checked areas."))
+
+        SingleInstanceManager.statusProviderOverride = {
+            """{"running":true,"health":{"degraded":true,"findings":[],"unchecked":[]}}"""
+        }
+        assertEquals(EXIT_DEGRADED, exitOf("doctor"))
+        assertTrue(out.toString().contains("BOSS reports degraded health without finding details."))
+    }
+
+    @Test
+    fun `status does not claim OK when health sources could not be checked`() {
+        serve("""{"running":true,"health":{"degraded":false,"findings":[],"unchecked":["plugins","browser","mcp"]}}""")
+
+        assertEquals(0, exitOf("status"))
+        val report = out.toString()
+        assertTrue(report.contains("No problems found in checked areas; not checked: plugins, browser, mcp"), report)
+        assertFalse(report.contains("Health:         OK"), report)
+    }
+
+    @Test
     fun `status prints no health line for a BOSS that does not report health`() {
         serve(NO_HEALTH)
 

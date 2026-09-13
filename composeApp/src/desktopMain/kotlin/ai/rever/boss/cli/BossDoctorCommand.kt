@@ -62,7 +62,13 @@ internal fun formatDoctorReport(health: JsonObject): String =
         appendLine("-----------")
         val findings = health.findings()
         if (findings.isEmpty()) {
-            appendLine("No problems found.")
+            appendLine(
+                when {
+                    health.isDegraded() -> "BOSS reports degraded health without finding details."
+                    health.uncheckedAreas().isNotEmpty() -> "No problems found in checked areas."
+                    else -> "No problems found."
+                },
+            )
         } else {
             for (finding in findings) {
                 appendLine("[${finding.text("severity") ?: "problem"}] ${finding.text("summary").orEmpty()}")
@@ -78,7 +84,14 @@ internal fun formatDoctorReport(health: JsonObject): String =
 internal fun healthSummaryOf(status: JsonObject): String? {
     val health = status["health"] as? JsonObject ?: return null
     val count = health.findings().size
-    return if (count == 0) "OK" else "${problemCount(count)} (run 'boss doctor')"
+    val summary = if (count == 0) "OK" else "${problemCount(count)} (run 'boss doctor')"
+    val unchecked = health.uncheckedAreas()
+    return if (unchecked.isEmpty()) {
+        summary
+    } else {
+        val checkedSummary = if (count == 0) "No problems found in checked areas" else summary
+        "$checkedSummary; not checked: ${unchecked.joinToString(", ")}"
+    }
 }
 
 /** Whether this health object reports a degraded workspace. */
