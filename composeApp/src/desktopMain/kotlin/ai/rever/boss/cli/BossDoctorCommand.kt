@@ -61,11 +61,13 @@ internal fun formatDoctorReport(health: JsonObject): String =
         appendLine("BOSS Doctor")
         appendLine("-----------")
         val findings = health.findings()
+        val unchecked = health.uncheckedAreas()
+        val partial = health.partialAreas()
         if (findings.isEmpty()) {
             appendLine(
                 when {
                     health.isDegraded() -> "BOSS reports degraded health without finding details."
-                    health.uncheckedAreas().isNotEmpty() -> "No problems found in checked areas."
+                    unchecked.isNotEmpty() || partial.isNotEmpty() -> "No problems found in checked areas."
                     else -> "No problems found."
                 },
             )
@@ -76,22 +78,38 @@ internal fun formatDoctorReport(health: JsonObject): String =
             }
             appendLine("${problemCount(findings.size)} found.")
         }
-        val unchecked = health.uncheckedAreas()
         if (unchecked.isNotEmpty()) appendLine("Not checked: ${unchecked.joinToString(", ")}")
+        if (partial.isNotEmpty()) {
+            appendLine(
+                "Partially checked: ${partial.joinToString(", ")}. Some sources could not be read, " +
+                    "so problems there may be missing.",
+            )
+        }
     }.trimEnd()
 
-/** The value of the `Health:` line in `boss status`, or null for a BOSS that does not report health. */
+/**
+ * The value of the `Health:` line in `boss status`, or null for a BOSS that does not report health.
+ *
+ * An area that was only partly read qualifies the line the same way an unchecked one does, so a
+ * report that covers some windows and not others never reads as a clean bill of health.
+ */
 internal fun healthSummaryOf(status: JsonObject): String? {
     val health = status["health"] as? JsonObject ?: return null
     val count = health.findings().size
-    val summary = if (count == 0) "OK" else "${problemCount(count)} (run 'boss doctor')"
     val unchecked = health.uncheckedAreas()
-    return if (unchecked.isEmpty()) {
-        summary
-    } else {
-        val checkedSummary = if (count == 0) "No problems found in checked areas" else summary
-        "$checkedSummary; not checked: ${unchecked.joinToString(", ")}"
-    }
+    val partial = health.partialAreas()
+    val qualifiers =
+        buildList {
+            if (unchecked.isNotEmpty()) add("not checked: ${unchecked.joinToString(", ")}")
+            if (partial.isNotEmpty()) add("partially checked: ${partial.joinToString(", ")}")
+        }
+    val summary =
+        when {
+            count > 0 -> "${problemCount(count)} (run 'boss doctor')"
+            qualifiers.isEmpty() -> "OK"
+            else -> "No problems found in checked areas"
+        }
+    return if (qualifiers.isEmpty()) summary else "$summary; ${qualifiers.joinToString("; ")}"
 }
 
 /** Whether this health object reports a degraded workspace. */
@@ -99,8 +117,13 @@ internal fun JsonObject.isDegraded() = (get("degraded") as? JsonPrimitive)?.bool
 
 private fun JsonObject.findings() = (get("findings") as? JsonArray).orEmpty().filterIsInstance<JsonObject>()
 
-private fun JsonObject.uncheckedAreas(): List<String> =
-    (get("unchecked") as? JsonArray).orEmpty().mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+private fun JsonObject.uncheckedAreas(): List<String> = areaNames("unchecked")
+
+/** Areas the running BOSS could read only in part. Absent on a BOSS that predates the field. */
+private fun JsonObject.partialAreas(): List<String> = areaNames("partial")
+
+private fun JsonObject.areaNames(key: String): List<String> =
+    (get(key) as? JsonArray).orEmpty().mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
 
 /** A field on one line. Fault messages can contain line breaks, and the report prints one line per item. */
 private fun JsonObject.text(key: String): String? =

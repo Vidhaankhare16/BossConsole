@@ -12,7 +12,8 @@ import kotlinx.serialization.json.putJsonArray
  *
  * Field names and the lowercase [HealthArea.wireName] and [HealthSeverity.wireName] values are a
  * contract with scripts and agents: add fields, never rename them. An absent `subject` or `remedy`
- * is omitted rather than sent as null.
+ * is omitted rather than sent as null. `partial` is additive: a reader that does not know it sees
+ * exactly what it saw before.
  */
 internal fun WorkspaceHealthReport.toJson(): JsonObject =
     buildJsonObject {
@@ -31,5 +32,8 @@ internal fun WorkspaceHealthReport.toJson(): JsonObject =
         }
         putJsonArray("unchecked") {
             for (area in unchecked.sortedBy { it.ordinal }) add(area.wireName)
+        }
+        putJsonArray("partial") {
+            for (area in partial.sortedBy { it.ordinal }) add(area.wireName)
         }
     }

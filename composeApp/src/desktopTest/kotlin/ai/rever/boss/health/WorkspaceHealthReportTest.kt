@@ -193,6 +193,36 @@ class WorkspaceHealthReportTest {
     }
 
     @Test
+    fun `a failed window source marks plugins partial while keeping what the others reported`() {
+        val stoppedRow = row("tasks", PluginHealthStatus.NEEDS_ATTENTION, detail = STOPPED)
+
+        val report =
+            workspaceHealthReport(
+                inputs(plugins = listOf(snapshot(stoppedRow, stopped = setOf("tasks"))), pluginSourceFailures = 1),
+            )
+
+        assertEquals(listOf(HealthCodes.PLUGIN_STOPPED), report.findings.map { it.code })
+        assertEquals(setOf(HealthArea.PLUGINS), report.partial)
+        assertTrue(report.unchecked.isEmpty())
+    }
+
+    @Test
+    fun `an area nothing could be read from is unchecked and never also partial`() {
+        val report = workspaceHealthReport(inputs(plugins = null, pluginSourceFailures = 2))
+
+        assertEquals(setOf(HealthArea.PLUGINS), report.unchecked)
+        assertTrue(report.partial.isEmpty())
+    }
+
+    @Test
+    fun `a fully read area is neither unchecked nor partial`() {
+        val report = workspaceHealthReport(inputs(plugins = listOf(snapshot(row("notes", PluginHealthStatus.HEALTHY)))))
+
+        assertTrue(report.unchecked.isEmpty())
+        assertTrue(report.partial.isEmpty())
+    }
+
+    @Test
     fun `json uses lowercase wire names and omits absent fields`() {
         val report =
             WorkspaceHealthReport(
@@ -211,13 +241,23 @@ class WorkspaceHealthReportTest {
         assertFalse(finding.containsKey("subject"))
         assertFalse(finding.containsKey("remedy"))
         assertEquals(listOf("browser"), (json.getValue("unchecked") as JsonArray).map { it.jsonPrimitive.content })
+        assertTrue((json.getValue("partial") as JsonArray).isEmpty())
+    }
+
+    @Test
+    fun `json carries partial areas by wire name`() {
+        val json = WorkspaceHealthReport(findings = emptyList(), partial = setOf(HealthArea.PLUGINS)).toJson()
+
+        assertEquals(listOf("plugins"), (json.getValue("partial") as JsonArray).map { it.jsonPrimitive.content })
+        assertFalse(json.getValue("degraded").jsonPrimitive.boolean)
     }
 
     private fun inputs(
         plugins: List<PluginHealthSnapshot>? = emptyList(),
         browser: BrowserEngineHealth? = BrowserEngineHealth.Healthy,
         mcp: McpFaults? = McpFaults(killSwitch = null, policy = null),
-    ) = WorkspaceHealthInputs(plugins, browser, mcp)
+        pluginSourceFailures: Int = 0,
+    ) = WorkspaceHealthInputs(plugins, browser, mcp, pluginSourceFailures)
 
     private fun mcpFinding(
         killSwitch: McpKillSwitchFault? = null,

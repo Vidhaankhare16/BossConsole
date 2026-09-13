@@ -1,9 +1,12 @@
 package ai.rever.boss.health
 
+import ai.rever.boss.components.plugin.PluginHealthRow
 import ai.rever.boss.components.plugin.PluginHealthSnapshot
+import ai.rever.boss.components.plugin.PluginHealthStatus
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class WorkspaceHealthCollectorTest {
     @Test
@@ -16,6 +19,7 @@ class WorkspaceHealthCollectorTest {
             ).collect()
 
         assertEquals(setOf(HealthArea.PLUGINS), report.unchecked)
+        assertTrue(report.partial.isEmpty(), "nothing was read, so the area is unchecked rather than partial")
         assertEquals(listOf(HealthCodes.BROWSER_ENGINE_UNRESPONSIVE), report.findings.map { it.code })
     }
 
@@ -23,7 +27,7 @@ class WorkspaceHealthCollectorTest {
     fun `a class missing from a health path is contained and never reported as healthy`() {
         val report =
             WorkspaceHealthCollector(
-                pluginSnapshots = { listOf(ONE_WINDOW) },
+                pluginSnapshots = { PluginSnapshotRead(listOf(ONE_WINDOW)) },
                 browserHealth = { throw NoClassDefFoundError("com/teamdev/jxbrowser/engine/Engine") },
                 mcpFaults = { McpFaults(killSwitch = null, policy = null) },
             ).collect()
@@ -36,7 +40,7 @@ class WorkspaceHealthCollectorTest {
     fun `with no window open plugin health is unchecked rather than healthy`() {
         val report =
             WorkspaceHealthCollector(
-                pluginSnapshots = { emptyList() },
+                pluginSnapshots = { PluginSnapshotRead(emptyList()) },
                 browserHealth = { BrowserEngineHealth.Healthy },
                 mcpFaults = { McpFaults(killSwitch = null, policy = null) },
             ).collect()
@@ -45,7 +49,49 @@ class WorkspaceHealthCollectorTest {
         assertFalse(report.degraded)
     }
 
+    @Test
+    fun `snapshots that were read survive a failing source and the area is reported partial`() {
+        val report =
+            WorkspaceHealthCollector(
+                pluginSnapshots = { PluginSnapshotRead(listOf(STOPPED_WINDOW), failedSources = 1) },
+                browserHealth = { BrowserEngineHealth.Healthy },
+                mcpFaults = { McpFaults(killSwitch = null, policy = null) },
+            ).collect()
+
+        assertEquals(listOf(HealthCodes.PLUGIN_STOPPED), report.findings.map { it.code })
+        assertTrue(report.unchecked.isEmpty())
+        assertEquals(setOf(HealthArea.PLUGINS), report.partial)
+    }
+
+    @Test
+    fun `plugins are unchecked rather than partial when every window source failed`() {
+        val report =
+            WorkspaceHealthCollector(
+                pluginSnapshots = { PluginSnapshotRead(emptyList(), failedSources = 2) },
+                browserHealth = { BrowserEngineHealth.Healthy },
+                mcpFaults = { McpFaults(killSwitch = null, policy = null) },
+            ).collect()
+
+        assertEquals(setOf(HealthArea.PLUGINS), report.unchecked)
+        assertTrue(report.partial.isEmpty())
+        assertFalse(report.degraded)
+    }
+
     private companion object {
         val ONE_WINDOW = PluginHealthSnapshot(rows = emptyList(), sandboxDisabledPluginIds = emptySet())
+
+        val STOPPED_WINDOW =
+            PluginHealthSnapshot(
+                rows =
+                    listOf(
+                        PluginHealthRow(
+                            "terminaltab",
+                            "Terminal Tab",
+                            PluginHealthStatus.NEEDS_ATTENTION,
+                            "The plugin stopped and needs recovery.",
+                        ),
+                    ),
+                sandboxDisabledPluginIds = setOf("terminaltab"),
+            )
     }
 }

@@ -1,6 +1,5 @@
 package ai.rever.boss.health
 
-import ai.rever.boss.components.plugin.PluginHealthSnapshot
 import ai.rever.boss.config.ChromiumAutoDownloader
 import ai.rever.boss.mcp.McpToolRegistryImpl
 import ai.rever.boss.plugin.browser.EngineInitError
@@ -15,22 +14,30 @@ import ai.rever.boss.utils.logging.LogCategory
  * sources are parameters so tests can replace them without starting a browser engine.
  */
 internal class WorkspaceHealthCollector(
-    private val pluginSnapshots: () -> List<PluginHealthSnapshot> = WorkspaceHealthSources::pluginSnapshots,
+    private val pluginSnapshots: () -> PluginSnapshotRead = WorkspaceHealthSources::pluginSnapshots,
     private val browserHealth: () -> BrowserEngineHealth = ::currentBrowserEngineHealth,
     private val mcpFaults: () -> McpFaults = ::currentMcpFaults,
 ) {
     /**
      * Never throws. A source that cannot be read is reported as unchecked, never as healthy. With no
      * window open there is no plugin manager to read, so plugins are unchecked as well.
+     *
+     * Plugin health has one source per window and [WorkspaceHealthSources.pluginSnapshots] contains
+     * each of them separately, so plugins go unchecked only when no window answered. When some
+     * windows answered and others threw, their findings are kept and the area is reported partial
+     * rather than complete.
      */
-    fun collect(): WorkspaceHealthReport =
-        workspaceHealthReport(
+    fun collect(): WorkspaceHealthReport {
+        val plugins = read(HealthArea.PLUGINS, pluginSnapshots)
+        return workspaceHealthReport(
             WorkspaceHealthInputs(
-                plugins = read(HealthArea.PLUGINS, pluginSnapshots)?.takeIf { it.isNotEmpty() },
+                plugins = plugins?.snapshots?.takeIf { it.isNotEmpty() },
                 browser = read(HealthArea.BROWSER, browserHealth),
                 mcp = read(HealthArea.MCP, mcpFaults),
+                pluginSourceFailures = plugins?.failedSources ?: 0,
             ),
         )
+    }
 
     // A status query must still answer when one health source is broken, so each source is
     // contained here. LinkageError is caught alongside Exception because a class missing from

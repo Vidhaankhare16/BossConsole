@@ -137,6 +137,64 @@ class BossDoctorCliTest {
     }
 
     @Test
+    fun `doctor names the partly covered area and does not call it problem free`() {
+        serve(PARTIAL)
+
+        assertEquals(EXIT_DEGRADED, exitOf("doctor"))
+        val report = out.toString()
+        assertTrue(report.contains("[warning] Plugin 'Terminal Tab' was stopped after repeated failures."), report)
+        assertTrue(report.contains("Partially checked: plugins."), report)
+        assertTrue(report.contains("so problems there may be missing"), report)
+    }
+
+    @Test
+    fun `doctor does not claim no problems found when an area was only partly read`() {
+        serve("""{"running":true,"health":{"degraded":false,"findings":[],"unchecked":[],"partial":["plugins"]}}""")
+
+        assertEquals(0, exitOf("doctor"))
+        val report = out.toString()
+        assertTrue(report.contains("No problems found in checked areas."), report)
+        assertFalse(report.contains("No problems found."), report)
+        assertTrue(report.contains("Partially checked: plugins."), report)
+    }
+
+    @Test
+    fun `status says which area was only partly checked`() {
+        serve(PARTIAL)
+
+        assertEquals(0, exitOf("status"))
+        val report = out.toString()
+        assertTrue(report.contains("1 problem (run 'boss doctor'); partially checked: plugins"), report)
+    }
+
+    @Test
+    fun `status reports both unchecked and partly checked areas`() {
+        serve(
+            """{"running":true,"health":{"degraded":false,"findings":[],""" +
+                """"unchecked":["browser"],"partial":["plugins"]}}""",
+        )
+
+        assertEquals(0, exitOf("status"))
+        val report = out.toString()
+        assertTrue(
+            report.contains("No problems found in checked areas; not checked: browser; partially checked: plugins"),
+            report,
+        )
+    }
+
+    @Test
+    fun `a BOSS that does not send partial is still read as fully checked`() {
+        serve(HEALTHY)
+
+        assertEquals(0, exitOf("doctor"))
+        assertTrue(out.toString().contains("No problems found."))
+        assertFalse(out.toString().contains("Partially checked"), out.toString())
+
+        assertEquals(0, exitOf("status"))
+        assertTrue(out.toString().contains("Health:         OK"), out.toString())
+    }
+
+    @Test
     fun `doctor is registered as a subcommand`() {
         assertTrue(createBossCLI().registeredSubcommands().any { it.commandName == "doctor" })
     }
@@ -169,6 +227,15 @@ class BossDoctorCliTest {
         val DEGRADED =
             """
             {"running":true,"version":"9.5.12","health":{"degraded":true,"unchecked":["browser"],"findings":[
+              {"area":"plugins","severity":"warning","code":"plugin_stopped_after_failures",
+               "summary":"Plugin 'Terminal Tab' was stopped after repeated failures.",
+               "subject":"terminaltab","remedy":"Restart BOSS."}]}}
+            """.trimIndent()
+
+        // One window reported a stopped plugin while another window's source failed.
+        val PARTIAL =
+            """
+            {"running":true,"health":{"degraded":true,"unchecked":[],"partial":["plugins"],"findings":[
               {"area":"plugins","severity":"warning","code":"plugin_stopped_after_failures",
                "summary":"Plugin 'Terminal Tab' was stopped after repeated failures.",
                "subject":"terminaltab","remedy":"Restart BOSS."}]}}

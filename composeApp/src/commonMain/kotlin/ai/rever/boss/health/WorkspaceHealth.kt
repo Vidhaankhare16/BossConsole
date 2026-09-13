@@ -52,12 +52,17 @@ internal data class HealthFinding(
 )
 
 /**
- * The workspace health report. Only [findings] make the workspace degraded; [unchecked] areas could
- * not be read, so they are reported as neither healthy nor degraded.
+ * The workspace health report.
+ *
+ * Only [findings] make the workspace degraded. [unchecked] areas could not be read at all, so they
+ * are reported as neither healthy nor degraded. [partial] areas are read from more than one source
+ * and at least one of those sources failed: the findings listed for them are real, but they do not
+ * cover the whole area, so an empty result there is not a clean bill of health.
  */
 internal data class WorkspaceHealthReport(
     val findings: List<HealthFinding>,
     val unchecked: Set<HealthArea> = emptySet(),
+    val partial: Set<HealthArea> = emptySet(),
 ) {
     val degraded: Boolean get() = findings.isNotEmpty()
 }
@@ -85,11 +90,18 @@ internal data class McpFaults(
     val policy: McpPolicyFault?,
 )
 
-/** What a report is built from. A null source could not be read and is reported as unchecked. */
+/**
+ * What a report is built from. A null source could not be read and is reported as unchecked.
+ *
+ * [pluginSourceFailures] is how many window sources threw while [plugins] was being read. It is
+ * only meaningful beside a non-null [plugins]: when no window answered at all the area is unchecked,
+ * which already says nothing was read.
+ */
 internal data class WorkspaceHealthInputs(
     val plugins: List<PluginHealthSnapshot>?,
     val browser: BrowserEngineHealth?,
     val mcp: McpFaults?,
+    val pluginSourceFailures: Int = 0,
 )
 
 private val findingOrder: Comparator<HealthFinding> =
@@ -115,7 +127,11 @@ internal fun workspaceHealthReport(inputs: WorkspaceHealthInputs): WorkspaceHeal
             if (inputs.browser == null) add(HealthArea.BROWSER)
             if (inputs.mcp == null) add(HealthArea.MCP)
         }
-    return WorkspaceHealthReport(findings.sortedWith(findingOrder), unchecked)
+    val partial =
+        buildSet {
+            if (inputs.plugins != null && inputs.pluginSourceFailures > 0) add(HealthArea.PLUGINS)
+        }
+    return WorkspaceHealthReport(findings.sortedWith(findingOrder), unchecked, partial)
 }
 
 /**
