@@ -140,7 +140,6 @@
     <ID>CyclomaticComplexMethod:EditorContentProviderImpl.kt$EditorContentProviderImpl$override fun detectLanguage(filePath: String): String</ID>
     <ID>CyclomaticComplexMethod:EmailAuthService.kt$EmailAuthService$suspend fun verifyMagicLinkToken( token: String, email: String? = null, type: String = "magiclink", ): Result&lt;Boolean&gt;</ID>
     <ID>CyclomaticComplexMethod:EmptyContentScreen.kt$@Composable private fun Card( icon: ImageVector, title: String, description: String, isSelected: Boolean, enabled: Boolean, onClick: () -&gt; Unit, modifier: Modifier = Modifier, )</ID>
-    <ID>CyclomaticComplexMethod:FileIndexer.kt$FileIndexer$private suspend fun scanDirectory( dir: File, rootCanonicalPath: String, rootPathLength: Int, files: MutableList&lt;IndexedFile&gt;, depth: Int = 0, )</ID>
     <ID>CyclomaticComplexMethod:FileNameSanitizer.kt$FileNameSanitizer$fun sanitize( fileName: String, replacement: Char = '_', ): String</ID>
     <ID>CyclomaticComplexMethod:Fluck.kt$@Composable fun BrowserErrorView( error: Throwable, url: String, retryCount: Int = 0, maxRetries: Int = 3, onRetry: (() -&gt; Unit)? = null, onReset: (() -&gt; Unit)? = null, onResetBrowser: (() -&gt; Unit)? = null, onRetryEngine: (() -&gt; Unit)? = null, )</ID>
     <ID>CyclomaticComplexMethod:Fluck.kt$FluckTabComponent$@Composable override fun Content()</ID>
@@ -479,7 +478,6 @@
     <ID>LoopWithTooManyJumpStatements:BrowserServiceImpl.kt$BrowserServiceImpl$for</ID>
     <ID>LoopWithTooManyJumpStatements:CLIInstaller.kt$CLIInstaller$for</ID>
     <ID>LoopWithTooManyJumpStatements:DesktopGitService.kt$GitService$while</ID>
-    <ID>LoopWithTooManyJumpStatements:FileIndexer.kt$FileIndexer$for</ID>
     <ID>LoopWithTooManyJumpStatements:GitHubUpdateSource.kt$GitHubUpdateSource$while</ID>
     <ID>LoopWithTooManyJumpStatements:GlobalSearchDialog.kt$for</ID>
     <ID>LoopWithTooManyJumpStatements:PerformanceDataProviderImpl.kt$PerformanceDataProviderImpl$for</ID>
@@ -974,7 +972,6 @@
     <ID>NestedBlockDepth:DynamicPluginManager.kt$DynamicPluginManager$suspend fun installPlugin( jarPath: String, enabled: Boolean = true, ): Result&lt;DynamicPluginInfo&gt;</ID>
     <ID>NestedBlockDepth:DynamicPluginManager.kt$DynamicPluginManager$suspend fun loadPersistedPlugins(plugins: List&lt;PersistedPluginEntry&gt;): Map&lt;String, Result&lt;DynamicPluginInfo&gt;&gt;</ID>
     <ID>NestedBlockDepth:DynamicPluginManager.kt$DynamicPluginManager.Companion$private suspend fun hotSwapApiLayerOrchestration(pluginDir: java.io.File): Result&lt;Int&gt;</ID>
-    <ID>NestedBlockDepth:FileIndexer.kt$FileIndexer$private suspend fun scanDirectory( dir: File, rootCanonicalPath: String, rootPathLength: Int, files: MutableList&lt;IndexedFile&gt;, depth: Int = 0, )</ID>
     <ID>NestedBlockDepth:FluckEngine.kt$FluckEngine$private fun cleanupStaleLockFiles(profileDir: java.nio.file.Path): Boolean</ID>
     <ID>NestedBlockDepth:FluckEngine.kt$FluckEngine$private fun killStaleChromiumProcesses()</ID>
     <ID>NestedBlockDepth:FontManager.kt$FontManager$private fun discoverAndCategorizeFonts(): Map&lt;String, List&lt;String&gt;&gt;</ID>
