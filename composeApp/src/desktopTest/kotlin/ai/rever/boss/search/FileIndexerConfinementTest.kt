@@ -5,8 +5,10 @@ import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.io.File
+import java.nio.file.FileSystemException
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.TimeUnit
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
@@ -32,23 +34,49 @@ class FileIndexerConfinementTest {
     private fun linkDirectory(
         link: Path,
         target: Path,
+    ): Boolean {
+        val created = symbolicLink(link, target) || junctionDirectory(link, target)
+        if (created) assertTrue(Files.exists(link), "created link must resolve: $link")
+        return created
+    }
+
+    private fun symbolicLink(
+        link: Path,
+        target: Path,
     ): Boolean =
-        runCatching { Files.createSymbolicLink(link, target) }.isSuccess ||
-            junctionDirectory(link, target)
+        try {
+            Files.createSymbolicLink(link, target)
+            true
+        } catch (_: UnsupportedOperationException) {
+            false
+        } catch (_: FileSystemException) {
+            false
+        }
 
     /** `mklink /J`, which unlike a symlink needs no privilege, and unlike it is Windows only. */
     private fun junctionDirectory(
         link: Path,
         target: Path,
-    ): Boolean =
-        System.getProperty("os.name").lowercase().contains("win") &&
-            runCatching {
+    ): Boolean {
+        if (!System.getProperty("os.name").lowercase().contains("win")) return false
+        val output = Files.createTempFile("junction-setup", ".log")
+        try {
+            val process =
                 ProcessBuilder("cmd", "/c", "mklink", "/J", link.toString(), target.toString())
                     .redirectErrorStream(true)
-                    .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                    .redirectOutput(output.toFile())
                     .start()
-                    .waitFor() == 0
-            }.getOrDefault(false)
+            try {
+                assertTrue(process.waitFor(10, TimeUnit.SECONDS), "mklink timed out")
+                assumeTrue(process.exitValue() == 0, "mklink failed: ${Files.readString(output)}")
+                return true
+            } finally {
+                if (process.isAlive) process.destroyForcibly()
+            }
+        } finally {
+            Files.deleteIfExists(output)
+        }
+    }
 
     private fun index(projectPath: String): List<IndexedFile> {
         val indexer = FileIndexer()
@@ -109,6 +137,37 @@ class FileIndexerConfinementTest {
 
         assertEquals(1, indexed.size, "exactly the one source file: ${indexed.map { it.path }}")
         assertEquals("src${File.separatorChar}Main.kt", indexed.single().relativePath)
+        assertEquals(link.resolve("src/Main.kt").toFile().absolutePath, indexed.single().path)
+    }
+
+    @Test
+    fun `a directory link inside the project remains indexed`(
+        @TempDir base: File,
+    ) {
+        val proj = File(base, "proj").apply { mkdirs() }
+        val target = File(proj, "src").apply { mkdirs() }
+        File(target, "Inside.kt").writeText("fun inside() {}")
+        val link = proj.toPath().resolve("alias")
+        assumeTrue(linkDirectory(link, target.toPath()), "host supports neither symlink nor junction")
+
+        val indexed = index(proj.absolutePath)
+
+        assertTrue(indexed.any { it.relativePath == "alias${File.separator}Inside.kt" })
+        assertTrue(indexed.any { it.path == link.resolve("Inside.kt").toFile().absolutePath })
+    }
+
+    @Test
+    fun `a file link outside the project is excluded`(
+        @TempDir base: File,
+    ) {
+        val proj = File(base, "proj").apply { mkdirs() }
+        File(proj, "Inside.kt").writeText("fun inside() {}")
+        val outside = File(base, "proj-secret.txt").apply { writeText("outside") }
+        val link = proj.toPath().resolve("linked.txt")
+        assumeTrue(symbolicLink(link, outside.toPath()), "host cannot create file symlinks")
+        assertTrue(Files.exists(link))
+
+        assertEquals(listOf("Inside.kt"), index(proj.absolutePath).map { it.name })
     }
 
     @Test

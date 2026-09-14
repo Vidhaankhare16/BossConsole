@@ -241,7 +241,7 @@ class FileIndexer(
         root: IndexRoot,
     ): Boolean =
         child.name.startsWith(".") ||
-            (child.isDirectory && child.name in excludedDirectories) ||
+            (child.name in excludedDirectories && child.isDirectory) ||
             !isConfined(child, root)
 
     /**
@@ -309,6 +309,8 @@ class FileIndexer(
  * attribute read rather than two: [java.nio.file.Files.isSymbolicLink] performs this same
  * read internally and returns a single flag from it, so calling it first would read every
  * entry's attributes twice to answer the common non-link case.
+ * Other reparse points, including cloud placeholders, also take the resolve path;
+ * the fast path's benefit therefore depends on the filesystem and project contents.
  *
  * A read that fails answers true, so an entry we cannot classify goes to the resolve rather
  * than being waved through.
