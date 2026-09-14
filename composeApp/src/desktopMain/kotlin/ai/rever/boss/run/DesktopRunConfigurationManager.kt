@@ -25,6 +25,12 @@ actual object RunConfigurationManager {
             ignoreUnknownKeys = true
         }
 
+    /** The trailing " (...)" group of a configuration name, which disambiguation rewrites. */
+    private val trailingGroupRegex = Regex("\\([^)]+\\)$")
+
+    /** The " [Project]" part inside that group, present when the name came from a project scan. */
+    private val trailingProjectRegex = Regex("( \\[[^\\]]*])\\)$")
+
     private val detector = DesktopMainFunctionDetector()
 
     private val _currentSettings = MutableStateFlow(RunConfigurationSettings())
@@ -106,12 +112,18 @@ actual object RunConfigurationManager {
                 config
             } else {
                 // Add parent directory to make unique. A stored filePath is an OS-native
-                // absolute path (File.absolutePath), so split on both separators.
-                val parts = config.filePath.split('/', '\\')
+                // absolute path (File.absolutePath), so split on both separators. Empty segments
+                // are dropped the way DesktopMainFunctionDetector.detectModuleName drops them:
+                // this path is read from run-configurations.json, which is hand-editable, and a
+                // doubled separator would otherwise put "" into takeLast(2) and label it "/Main.kt".
+                val parts = config.filePath.split('/', '\\').filter { it.isNotEmpty() }
                 val uniqueName =
                     if (parts.size >= 2) {
                         val parentAndFile = parts.takeLast(2).joinToString("/")
-                        config.name.replace(Regex("\\([^)]+\\)$")) { "($parentAndFile)" }
+                        // Keep any " [Project]" the stored name already carries: the trailing-group
+                        // regex would otherwise consume it, and makeNamesUnique rebuilds it.
+                        val projectSuffix = trailingProjectRegex.find(config.name)?.groupValues?.get(1) ?: ""
+                        config.name.replace(trailingGroupRegex) { "($parentAndFile$projectSuffix)" }
                     } else {
                         config.name
                     }
@@ -166,7 +178,7 @@ actual object RunConfigurationManager {
     ): List<RunConfiguration> {
         // Group by name to find duplicates
         val nameGroups = configs.groupBy { it.name }
-        val projectName = projectPath.extractFileName().takeIf { it.isNotBlank() }
+        val projectName = projectPath.trimEnd('/', '\\').extractFileName().takeIf { it.isNotBlank() }
 
         return configs.map { config ->
             val group = nameGroups[config.name] ?: return@map config
@@ -174,14 +186,14 @@ actual object RunConfigurationManager {
                 config
             } else {
                 // Add parent directory to make unique, preserving project name
-                val relativePath = config.filePath.removePrefix(projectPath).trimStart('/', '\\')
-                val parts = relativePath.split('/', '\\')
+                val relativePath = config.filePath.removePrefix(projectPath)
+                val parts = relativePath.split('/', '\\').filter { it.isNotEmpty() }
                 val uniqueName =
                     if (parts.size >= 2) {
                         // Include parent directory: "main (parent/Main.kt [Project])"
                         val parentAndFile = parts.takeLast(2).joinToString("/")
                         val projectSuffix = if (projectName != null) " [$projectName]" else ""
-                        config.name.replace(Regex("\\([^)]+\\)$")) { "($parentAndFile$projectSuffix)" }
+                        config.name.replace(trailingGroupRegex) { "($parentAndFile$projectSuffix)" }
                     } else {
                         config.name
                     }
