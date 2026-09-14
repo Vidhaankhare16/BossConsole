@@ -1,6 +1,7 @@
 package ai.rever.boss.run
 
 import ai.rever.boss.plugin.pathutils.BossDirectories
+import ai.rever.boss.utils.extractFileName
 import ai.rever.boss.utils.logging.BossLogger
 import ai.rever.boss.utils.logging.LogCategory
 import kotlinx.coroutines.Dispatchers
@@ -96,7 +97,7 @@ actual object RunConfigurationManager {
     /**
      * Make stored configuration names unique using parent directory context.
      */
-    private fun makeStoredNamesUnique(configs: List<RunConfiguration>): List<RunConfiguration> {
+    internal fun makeStoredNamesUnique(configs: List<RunConfiguration>): List<RunConfiguration> {
         val nameGroups = configs.groupBy { it.name }
 
         return configs.map { config ->
@@ -104,8 +105,9 @@ actual object RunConfigurationManager {
             if (group.size <= 1) {
                 config
             } else {
-                // Add parent directory to make unique
-                val parts = config.filePath.split("/")
+                // Add parent directory to make unique. A stored filePath is an OS-native
+                // absolute path (File.absolutePath), so split on both separators.
+                val parts = config.filePath.split('/', '\\')
                 val uniqueName =
                     if (parts.size >= 2) {
                         val parentAndFile = parts.takeLast(2).joinToString("/")
@@ -158,13 +160,13 @@ actual object RunConfigurationManager {
      * E.g., two "main (Main.kt [Project])" become "main (app/Main.kt [Project])" and "main (lib/Main.kt [Project])"
      * Preserves the project name in brackets if present.
      */
-    private fun makeNamesUnique(
+    internal fun makeNamesUnique(
         configs: List<RunConfiguration>,
         projectPath: String,
     ): List<RunConfiguration> {
         // Group by name to find duplicates
         val nameGroups = configs.groupBy { it.name }
-        val projectName = projectPath.substringAfterLast('/').takeIf { it.isNotBlank() }
+        val projectName = projectPath.extractFileName().takeIf { it.isNotBlank() }
 
         return configs.map { config ->
             val group = nameGroups[config.name] ?: return@map config
@@ -172,8 +174,8 @@ actual object RunConfigurationManager {
                 config
             } else {
                 // Add parent directory to make unique, preserving project name
-                val relativePath = config.filePath.removePrefix(projectPath).removePrefix("/")
-                val parts = relativePath.split("/")
+                val relativePath = config.filePath.removePrefix(projectPath).trimStart('/', '\\')
+                val parts = relativePath.split('/', '\\')
                 val uniqueName =
                     if (parts.size >= 2) {
                         // Include parent directory: "main (parent/Main.kt [Project])"
