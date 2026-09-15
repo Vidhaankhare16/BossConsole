@@ -91,7 +91,9 @@ internal fun formatDoctorReport(health: JsonObject): String =
  * The value of the `Health:` line in `boss status`, or null for a BOSS that does not report health.
  *
  * An area that was only partly read qualifies the line the same way an unchecked one does, so a
- * report that covers some windows and not others never reads as a clean bill of health.
+ * report that covers some windows and not others never reads as a clean bill of health. A BOSS that
+ * declares itself degraded without listing findings is reported as degraded here too, so this line
+ * and `boss doctor` never tell opposite stories about the same response.
  */
 internal fun healthSummaryOf(status: JsonObject): String? {
     val health = status["health"] as? JsonObject ?: return null
@@ -106,6 +108,7 @@ internal fun healthSummaryOf(status: JsonObject): String? {
     val summary =
         when {
             count > 0 -> "${problemCount(count)} (run 'boss doctor')"
+            health.isDegraded() -> "Degraded without details (run 'boss doctor')"
             qualifiers.isEmpty() -> "OK"
             else -> "No problems found in checked areas"
         }

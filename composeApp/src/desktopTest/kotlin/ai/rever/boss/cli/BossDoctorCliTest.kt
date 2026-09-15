@@ -119,6 +119,19 @@ class BossDoctorCliTest {
     }
 
     @Test
+    fun `status and doctor tell the same story about a degraded report with no details`() {
+        serve(DEGRADED_NO_DETAILS)
+
+        assertEquals(0, exitOf("status"))
+        val status = out.toString()
+        assertTrue(status.contains("Health:         Degraded without details (run 'boss doctor')"), status)
+        assertFalse(status.contains("Health:         OK"), status)
+
+        assertEquals(EXIT_DEGRADED, exitOf("doctor"))
+        assertTrue(out.toString().contains("BOSS reports degraded health without finding details."), out.toString())
+    }
+
+    @Test
     fun `status does not claim OK when health sources could not be checked`() {
         serve("""{"running":true,"health":{"degraded":false,"findings":[],"unchecked":["plugins","browser","mcp"]}}""")
 
@@ -223,6 +236,11 @@ class BossDoctorCliTest {
         const val NO_HEALTH = """{"running":true,"version":"9.5.12"}"""
 
         const val HEALTHY = """{"running":true,"health":{"degraded":false,"findings":[],"unchecked":[]}}"""
+
+        // A newer BOSS may declare itself degraded without sending the details. Both commands read
+        // the same response, so neither may call it healthy.
+        const val DEGRADED_NO_DETAILS =
+            """{"running":true,"health":{"degraded":true,"findings":[],"unchecked":[]}}"""
 
         val DEGRADED =
             """

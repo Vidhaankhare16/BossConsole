@@ -98,6 +98,7 @@ boss doctor --json
 }
 ```
 
+- `degraded` is the verdict for the workspace, and is `true` whenever `findings` is non-empty. A reader should not infer health from the findings count alone: a newer BOSS may report `degraded: true` with an empty `findings` list, and both `boss doctor` and the `Health:` line in `boss status` report that as degraded rather than as OK.
 - `area` is `plugins`, `browser` or `mcp`.
 - `severity` is `critical` when something that should work is broken and a whole capability is gone (a browser engine that failed, or every MCP tool), and `warning` for something narrower: one plugin, one setting that was not saved, or a browser engine that has not been downloaded yet. Critical findings are listed first.
 - `code` is stable for scripts to match on: `plugin_stopped_after_failures`, `plugin_needs_attention`, `browser_engine_not_installed`, `browser_engine_unavailable`, `browser_engine_unresponsive`, `mcp_tools_withheld`, `mcp_tool_setting_not_saved`, `mcp_policy_unreadable`, `mcp_policy_not_saved`. `summary` is for people and may be reworded.
