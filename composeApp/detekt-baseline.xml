@@ -1091,7 +1091,7 @@
     <ID>ReturnCount:CLISecurityValidator.kt$CLISecurityValidator$fun isValidOpenTargetPath(path: String): Boolean</ID>
     <ID>ReturnCount:CLISecurityValidator.kt$CLISecurityValidator$fun isValidPath(path: String): Boolean</ID>
     <ID>ReturnCount:CLISecurityValidator.kt$CLISecurityValidator$fun normalizeAndValidateUrl(url: String): String?</ID>
-    <ID>ReturnCount:ChromiumAutoDownloader.kt$ChromiumAutoDownloader$fun isChromiumInstalled(): Boolean</ID>
+    <ID>ReturnCount:ChromiumAutoDownloader.kt$ChromiumAutoDownloader$internal fun chromiumInstalledAt( dir: Path = getChromiumDir(), requiredVersion: String = effectiveVersion, isMac: Boolean = System.getProperty("os.name").lowercase().contains("mac"), repairAttempted: () -&gt; Boolean = ::repairAlreadyAttempted, recordRepair: () -&gt; Unit, ): Boolean</ID>
     <ID>ReturnCount:ChromiumAutoDownloader.kt$ChromiumAutoDownloader$internal fun promotePendingInstall( pending: File, target: File, backup: File, )</ID>
     <ID>ReturnCount:ChromiumReleaseSource.kt$ChromiumReleaseResolver.Companion$private fun comparePreRelease( a: List&lt;String&gt;, b: List&lt;String&gt;, ): Int</ID>
     <ID>ReturnCount:CrossDeviceAuthService.kt$CrossDeviceAuthService$suspend fun handleCrossDeviceAuthentication( exception: CrossDeviceAuthenticationRequired, onAuthenticationComplete: suspend (PasskeyAuthenticationResult) -&gt; Result&lt;Unit&gt;, ): Result&lt;Unit&gt;</ID>

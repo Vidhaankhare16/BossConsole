@@ -605,6 +605,21 @@ class SingleInstanceChannelTest {
     }
 
     @Test
+    fun `plugin dev reload refuses a path-shaped plugin id on the wire`() {
+        // The id joins straight onto the dev staging root on the host, so a
+        // traversal token must be refused before it is parsed as a request.
+        assertTrue(SingleInstanceManager.acquireLock())
+        val descriptor = assertNotNull(readPublishedDescriptor())
+        val base = "$PROTOCOL_VERSION ${descriptor.token} $VERB_PLUGIN_DEV_RELOAD "
+        assertEquals(RESPONSE_REJECTED, exchange(descriptor, "$base.."))
+        assertEquals(RESPONSE_REJECTED, exchange(descriptor, "$base..\\..\\etc"))
+        assertEquals(RESPONSE_REJECTED, exchange(descriptor, "${base}plugins/other"))
+        assertEquals(RESPONSE_REJECTED, exchange(descriptor, "${base}C:\\evil"))
+        assertEquals(RESPONSE_REJECTED, exchange(descriptor, base))
+        assertEquals(RESPONSE_REJECTED, exchange(descriptor, base.dropLast(1)))
+    }
+
+    @Test
     fun `status JSON escapes platform strings`() {
         val previous = System.getProperty("os.arch")
         val unusual = "C:\\Users\\name\"quoted\nline"
@@ -707,6 +722,22 @@ class SingleInstanceChannelTest {
         assertTrue(SingleInstanceManager.acquireLock())
         val failure = SingleInstanceManager.invokeMcpTool("large").exceptionOrNull()
         assertTrue(assertNotNull(failure).message.orEmpty().contains("response size limit"))
+    }
+
+    @Test
+    fun `reloadDevPlugin transmits diagnostic error over 256 bytes`() {
+        val longDetail = "DiagnosticContextInfo_".repeat(16)
+        SingleInstanceManager.pluginReloadHandlerOverride = { _ ->
+            throw IllegalStateException(longDetail)
+        }
+        assertTrue(SingleInstanceManager.acquireLock())
+        val result = SingleInstanceManager.reloadDevPlugin("diagnostic-plugin")
+        kotlin.test.assertIs<ReloadResult.Failed>(result)
+        assertTrue(
+            result.reason.length >= 350,
+            "Error response must preserve 350+ char diagnostic message: ${result.reason.length}",
+        )
+        assertTrue(result.reason.contains("DiagnosticContextInfo_"))
     }
 
     // ==================== Helpers ====================

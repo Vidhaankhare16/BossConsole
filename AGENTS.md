@@ -2038,9 +2038,6 @@ workspace by selecting the tools you need." Tools install app-wide, not into a S
 - [Role Creation](docs/ROLE_CREATION_GUIDE.md) - Creating and managing roles
 - [Windows Deep Link](docs/WINDOWS_DEEP_LINK_SETUP.md) - Windows protocol handler setup
 - [Release Rebuild](docs/RELEASE_REBUILD_GUIDE.md) - Re-running release builds
-
-
-
 ### Governed MCP invocation (#371)
 
 The host policy applies to registry invocation; it does not isolate installed JVM
@@ -2074,6 +2071,7 @@ Provider trust also covers tools added by later versions and replacement plugins
 that provider id. Already queued sibling prompts still ask. Explicit tool ASK rules
 still override provider ALLOW. The Trusted plugins UI lists ALLOW rules only; hand-edited
 provider DENY rules currently require policy-file editing to remove.
+
 Preserve a backup before manual recovery of a damaged policy;
 the fault flow withholds all tools until recovery. No automatic quarantine UI is
 provided. Ledger redaction is bounded and best effort, not a guarantee for secrets
@@ -2136,3 +2134,59 @@ storage failures get separate feedback. Stable DENY and damaged-file refusals ar
 inside the dialog, including backup/recovery guidance. Confirmation is tied to the full candidate snapshot.
 These privileged writes remain beside host policy enforcement. #416 tracks the separate
 observation/plugin architecture; this PR does not expose a policy writer to plugins.
+
+The MCP tool policies dialog also groups currently registered, enabled tools by
+provider into sections. All allows the section, View selects tools declared
+read-only except names in the host mutating catalog and HIGH/CRITICAL risk tools, Edit selects the remaining
+tools, and Custom uses individual checkboxes. Applying a preset denies tools
+outside its selection; existing tool rules are replaced only after the operator
+confirms the displayed counts and scope. These are explicit tool-name rules,
+not provider trust: future tools are not automatically granted access.
+`McpPolicyEngine.setSectionPolicies` writes the reviewed section atomically,
+checks every prior rule and tool/provider revocation stamp, refuses provider DENY
+and unreadable policy files, and invalidates queued grants/session trust after a
+successful save. Keep these checks when changing section UI; sequential calls to
+`setToolPolicy` would permit partial application and stale overwrites. Individual
+reset controls remain available below the sections.
+
+The section/global confirmation UI uses the same default-risk evaluator as the
+engine. HIGH/CRITICAL grants and replacements of an existing DENY display each
+tool's risk and require Review followed by Confirm. Failed writes retain the
+staged choices and retry action; successful or stale writes refresh revocation
+snapshots. Current saved rules (including ASK/default) are visible in expanded
+rows, and the summary distinguishes rules being replaced from new denials.
+Global None is a distinct deny-all preset, not Custom; Edit is the label at both
+levels. Search by plugin display name also matches its saved tool rules.
+
+## Process-wide plugin registrations belong to window lifetimes
+
+`DefaultPlugin` routes MCP/search providers, panel menus, settings pages, deep-link actions,
+shortcut providers and status-bar items through `WindowRegistrations`. The newest window's
+registration serves every window; unregistering it restores the newest surviving owner.
+Disabling or dynamically unregistering in one window therefore leaves another window's
+registration available. Per-window action dispatch is not implemented by this arbitration.
+
+Each window has a lifetime token. Release fences later registrations and snapshots admitted
+slots under a short owner lock; publication checks the fence under its slot lock. Plugin
+callbacks never run under the owner lock, and disposal does not wait on unowned slots.
+Restoring a shared id re-queries tools()/shortcuts() on the closing thread, so a slow surviving
+provider can delay that close. Replacement warnings and snapshot-at-registration semantics
+are intentional. Global access filters still apply independently of registration ownership.
+
+### Plugin Dev Staging & Launchpad Invariants
+
+- **Protected Plugins Overrule Dev JARs Unconditionally**:
+  When deduplicating or resolving dev vs. standard plugins, `isSystemPlugin` and `requiresRestartInsteadOfHotReload` plugins MUST NEVER be superseded by a dev JAR, regardless of file modification timestamps (`lastModified`). Never rely solely on additive bonuses (`versionBonus + lastModified`) without penalizing or filtering dev JARs on protected identities.
+
+- **Reload Forward & Rollback State Completeness**:
+  Hot-reload must support both active (`LOADED`) and inactive (`DISABLED`) plugins symmetrically:
+  - If a plugin was disabled prior to reload (`wasEnabled = false`), forward reload must install with `enabled = false` and accept `state == DISABLED` as an expected successful outcome.
+  - If the active user lacks RBAC permissions, forward reload must accept `state == DISABLED && !canAccess(manifest)` as a valid outcome.
+  - Rollback must restore `wasEnabled = false` and reinstall `v1.jar` in `DISABLED` state without uninstallation.
+
+- **Archive Traversal & Stream Bounds**:
+  Never trust `ZipEntry.size` alone for decompression limits, as `size == -1` in streaming ZIPs. Always enforce hard byte caps on the incoming `InputStream` (e.g. `readNBytes(MAX + 1)` or explicit counter bounds) to prevent heap exhaustion.
+
+- **Test Veracity Rules**:
+  - In deduplication tests, ALWAYS test with dev JAR `lastModified` strictly greater than standard JAR `lastModified` to mirror real-world compiler outputs.
+  - Test the public reload pipeline (`DevPluginReloader.reload`) end-to-end rather than calling internal rollback helpers in isolation.

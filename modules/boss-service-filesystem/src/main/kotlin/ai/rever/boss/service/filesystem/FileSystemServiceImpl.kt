@@ -16,6 +16,7 @@ import java.io.File
 import java.io.IOException
 import java.nio.file.AccessDeniedException
 import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.DirectoryNotEmptyException
 import java.nio.file.FileAlreadyExistsException
 import java.nio.file.FileSystems
 import java.nio.file.Files
@@ -160,16 +161,27 @@ class FileSystemServiceImpl : FileSystemServiceGrpcKt.FileSystemServiceCoroutine
             }
         }
 
+    // Directory creation and create I/O exception mapping retain their legacy behavior in this scoped fix.
     override suspend fun createFile(request: CreateFileRequest): Empty =
         withContext(Dispatchers.IO) {
             logger.info("createFile: path={}, isDirectory={}", request.path, request.isDirectory)
             validatePath(request.path)
             val file = File(request.path)
             if (request.createParents) file.parentFile?.mkdirs()
-            if (request.isDirectory) file.mkdirs() else file.createNewFile()
+            if (request.isDirectory) {
+                file.mkdirs()
+            } else if (!file.createNewFile()) {
+                throw status(Status.ALREADY_EXISTS, "File already exists: ${request.path}", null)
+            }
             Empty.getDefaultInstance()
         }
 
+    /**
+     * Nonrecursive deletion preserves missing-target success for RPC compatibility. NIO removes the
+     * directory entry without following links and supplies typed failures that survive gRPC as statuses.
+     * Recursive deletion retains its legacy unchecked behavior; changing that contract is separate work.
+     * Only AccessDeniedException maps to PERMISSION_DENIED; other provider I/O errors remain INTERNAL.
+     */
     override suspend fun deleteFile(request: DeleteFileRequest): Empty =
         withContext(Dispatchers.IO) {
             logger.info("deleteFile: path={}, recursive={}", request.path, request.recursive)
@@ -177,6 +189,24 @@ class FileSystemServiceImpl : FileSystemServiceGrpcKt.FileSystemServiceCoroutine
             val file = File(request.path)
             if (request.recursive && file.isDirectory) {
                 file.deleteRecursively()
+            } else if (!request.recursive) {
+                try {
+                    Files.deleteIfExists(file.toPath())
+                } catch (e: DirectoryNotEmptyException) {
+                    throw status(
+                        Status.FAILED_PRECONDITION,
+                        "Cannot delete non-empty directory without recursive=true: ${request.path}",
+                        e,
+                    )
+                } catch (e: AccessDeniedException) {
+                    throw status(Status.PERMISSION_DENIED, "Access denied: ${request.path}", e)
+                } catch (e: IOException) {
+                    throw status(
+                        Status.INTERNAL,
+                        "Failed to delete path: ${request.path}: ${e.message ?: e::class.java.simpleName}",
+                        e,
+                    )
+                }
             } else {
                 file.delete()
             }

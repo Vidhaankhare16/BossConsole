@@ -75,9 +75,10 @@ class GlobalSearchIsolationTest {
         assertFalse(dialogSource.contains("fileIndexer.indexProject("))
         assertTrue(hostSource.contains("onIndexProject = { state.spotlightFileIndexes.ensureIndexed"))
         assertFalse(dialogSource.contains("FileIndexer("))
-        val ownerLookup = "state.spotlightFileIndexes.indexerFor(selectedProject.path)"
+        val ownerLookup = "rememberSpotlightFileIndexer(state.spotlightFileIndexes, selectedProject.path)"
         assertTrue(hostSource.contains("val spotlightFileIndexer = $ownerLookup"))
         assertTrue(hostSource.contains("fileIndexer = spotlightFileIndexer"))
+        assertFalse(hostSource.contains("state.spotlightFileIndexes.indexerFor("))
     }
 
     private fun List<SearchResult>.fileResults() = filterIsInstance<SearchResult.FileResult>()

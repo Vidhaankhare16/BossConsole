@@ -58,3 +58,20 @@ Still to be performed on the paired host/plugin build; no new hardware validatio
 - On a Mac that has never granted BOSS Input Monitoring, confirm BOSS appears in System Settings > Privacy & Security > Input Monitoring. The app only preflights access and does not prompt; if absent, use the pane's `+` control and select BOSS.app when that option is available. Grant access, then turn swipe navigation off and on to retry.
 
 The reviewer requested this check before merge. Keep that requirement visible rather than treating green automated tests as a substitute.
+
+## Follow-up review: page ownership and performance
+
+- Scroll a heavy page rapidly with swipe navigation enabled and watch for jank or stalls.
+  The native contact claim only reads observer state; it must not call back into renderer/navigation.
+- Check an ordinary article containing a chart/canvas or an ARIA grid, as well as a page
+  with root `overscroll-behavior-x: contain` or `none`. A gesture over an unknown canvas/grid
+  or an explicitly contained scroll chain intentionally stays with the page. This is a
+  conservative navigation veto, not proof that every such element can scroll horizontally.
+- Google Sheets is the explicit exception: a fresh outward gesture at the horizontal edge
+  can navigate. `.grid-container` and `.native-scrollbar-x` are private page selectors; if
+  they change, the detector safely falls back to page ownership. Re-test after Sheets changes.
+- Repeated Input Monitoring off/on retry should not double-navigate; obsolete observer
+  generations are ignored even while the previous native tap is winding down.
+
+Node is a required test dependency for `SwipeNavParityTest`; a missing interpreter or
+source fixture fails rather than silently skipping the JavaScript parity check.

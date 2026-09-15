@@ -38,6 +38,7 @@ dependencies {
     runtimeOnly(libs.slf4j.simple)
 
     testImplementation(libs.kotlin.test.junit)
+    testImplementation(libs.grpc.netty)
 }
 
 tasks.jar {

@@ -703,6 +703,15 @@ console.log('\ngestures that must not navigate');
 }
 {
   const p = newPage(js);
+  let pathReads = 0;
+  for (let i = 0; i < 8; i++) {
+    p.wheelRaw({ deltaMode: 0, deltaX: -10, deltaY: 0, target: p.body,
+      composedPath: () => { pathReads++; return [p.body]; } });
+  }
+  eq('ordinary pages build one scroll path per contact, not per capture event', pathReads, 1);
+}
+{
+  const p = newPage(js);
   p.wheelRaw({ deltaMode: 1, deltaX: -40, deltaY: 0, target: p.body, composedPath: () => [p.body] });
   eq('line-mode wheels avoid host IPC', p.claimCalls(), 0);
   p.settle();

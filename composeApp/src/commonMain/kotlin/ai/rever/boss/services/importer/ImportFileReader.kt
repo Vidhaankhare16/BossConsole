@@ -57,7 +57,15 @@ object ImportFileReader {
                     path.endsWith(".html", ignoreCase = true) ||
                     path.endsWith(".htm", ignoreCase = true)
 
-            if (looksLikeHtml) parseBookmarkHtml(text) else parsePasswordCsv(text)
+            // Password-manager formats are sniffed before HTML/CSV: their markers
+            // are unambiguous, so a KeePass export saved with an odd extension is
+            // still read correctly.
+            when {
+                KeePassXmlParser.looksLikeKeePass(text) -> parseKeePassXml(text)
+                BitwardenJsonParser.looksLikeBitwarden(text) -> parseBitwardenJson(text)
+                looksLikeHtml -> parseBookmarkHtml(text)
+                else -> parsePasswordCsv(text)
+            }
         }.onFailure { error ->
             logger.warn(
                 LogCategory.FILE,
@@ -75,6 +83,48 @@ object ImportFileReader {
         }
         logger.info(LogCategory.FILE, "Parsed bookmark export", mapOf("count" to bookmarks.size))
         return ImportPreview(bookmarks = bookmarks)
+    }
+
+    private fun parseBitwardenJson(text: String): ImportPreview {
+        val passwords = BitwardenJsonParser.parseEntries(text)
+        if (passwords.isEmpty()) {
+            throw UnrecognisedImportFileException(
+                "No logins found in that Bitwarden export. Export the vault unencrypted and try again.",
+            )
+        }
+        logger.info(LogCategory.AUTH, "Parsed Bitwarden export", mapOf("count" to passwords.size))
+        return passwordManagerPreview(passwords)
+    }
+
+    private fun parseKeePassXml(text: String): ImportPreview {
+        val passwords = KeePassXmlParser.parseEntries(text)
+        if (passwords.isEmpty()) {
+            throw UnrecognisedImportFileException(
+                "No entries with a password found in that KeePass export.",
+            )
+        }
+        logger.info(LogCategory.AUTH, "Parsed KeePass export", mapOf("count" to passwords.size))
+        return passwordManagerPreview(passwords)
+    }
+
+    private fun passwordManagerPreview(entries: List<ImportedPassword>): ImportPreview {
+        val passwords = mutableListOf<ImportedPassword>()
+        val skipped = mutableListOf<SkippedRow>()
+        entries.forEachIndexed { index, entry ->
+            val reason =
+                when {
+                    entry.website.isBlank() || isNonWebPasswordEntry(entry.website) -> SkipReason.MISSING_URL
+                    entry.username.isBlank() -> SkipReason.MISSING_USERNAME
+                    entry.password.isBlank() -> SkipReason.MISSING_PASSWORD
+                    else -> null
+                }
+            if (reason == null) {
+                passwords.add(entry)
+            } else {
+                skipped.add(SkippedRow(index + 1, reason, displayLabel(entry.website, entry.username)))
+            }
+        }
+        return ImportPreview(passwords = passwords, skipped = skipped)
     }
 
     private fun parsePasswordCsv(text: String): ImportPreview {
@@ -173,7 +223,7 @@ object ImportFileReader {
                 row.size <= maxOf(columns.url, columns.password) -> SkipReason.MALFORMED_ROW
                 url.isEmpty() -> SkipReason.MISSING_URL
                 username.isEmpty() -> SkipReason.MISSING_USERNAME
-                password.isEmpty() -> SkipReason.MISSING_PASSWORD
+                password.isBlank() -> SkipReason.MISSING_PASSWORD
                 else -> null
             }
 

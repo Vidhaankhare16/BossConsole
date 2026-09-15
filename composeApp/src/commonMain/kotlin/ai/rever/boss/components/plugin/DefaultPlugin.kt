@@ -67,6 +67,7 @@ import ai.rever.boss.plugin.api.NotificationProvider
 import ai.rever.boss.plugin.api.PanelRegistry
 import ai.rever.boss.plugin.api.PluginContext
 import ai.rever.boss.plugin.api.PluginSandboxRef
+import ai.rever.boss.plugin.api.PluginState
 import ai.rever.boss.plugin.api.PluginStorageFactory
 import ai.rever.boss.plugin.api.PluginStoreApiKeyProvider
 import ai.rever.boss.plugin.api.ProjectData
@@ -84,6 +85,7 @@ import ai.rever.boss.plugin.api.UserManagementProvider
 import ai.rever.boss.plugin.api.WorkspaceDataProvider
 import ai.rever.boss.plugin.api.ZoomSettingsProvider
 import ai.rever.boss.plugin.browser.BrowserService
+import ai.rever.boss.plugin.launchpad.DevPluginArtifacts
 import ai.rever.boss.plugin.loader.PluginLoadException
 import ai.rever.boss.plugin.pathutils.BossDirectories
 import ai.rever.boss.plugin.sandbox.PluginSandboxManager
@@ -159,7 +161,59 @@ class DefaultPlugin(
     private val workspaceManager: ai.rever.boss.components.workspaces.WorkspaceManager? = null,
     private val splitViewState: ai.rever.boss.components.window_panel.SplitViewState? = null,
 ) : PluginContext {
+    private val registrationOwner = WindowRegistrations.Owner()
+
     companion object {
+        /**
+         * Which window's plugin copy each process-wide registration belongs to. Shared by every
+         * window's DefaultPlugin because the registries it arbitrates are shared; see
+         * [WindowRegistrations] for why closing one window must not remove another's.
+         */
+        private val registrations = WindowRegistrations()
+
+        private val searchProviders =
+            WindowRegistrations.Target<SearchProvider>(
+                "search",
+                SearchRegistryImpl::registerProvider,
+                SearchRegistryImpl::unregisterProvider,
+            )
+        private val mcpToolProviders =
+            WindowRegistrations.Target<ai.rever.boss.plugin.api.McpToolProvider>(
+                "mcp",
+                ai.rever.boss.mcp.McpToolRegistryImpl::registerProvider,
+                ai.rever.boss.mcp.McpToolRegistryImpl::unregisterProvider,
+            )
+        private val panelMenus =
+            WindowRegistrations.Target<ai.rever.boss.plugin.api.PanelMenuContribution>(
+                "panelMenu",
+                ai.rever.boss.components.plugin.registries.PanelMenuRegistryImpl::register,
+                ai.rever.boss.components.plugin.registries.PanelMenuRegistryImpl::unregister,
+            )
+        private val settingsPages =
+            WindowRegistrations.Target<ai.rever.boss.plugin.api.SettingsPageProvider>(
+                "settingsPage",
+                ai.rever.boss.components.plugin.registries.SettingsPageRegistryImpl::register,
+                ai.rever.boss.components.plugin.registries.SettingsPageRegistryImpl::unregister,
+            )
+        private val deepLinkActions =
+            WindowRegistrations.Target<ai.rever.boss.plugin.api.DeepLinkActionHandler>(
+                "deepLinkAction",
+                ai.rever.boss.components.plugin.registries.DeepLinkActionRegistryImpl::register,
+                ai.rever.boss.components.plugin.registries.DeepLinkActionRegistryImpl::unregister,
+            )
+        private val shortcutActions =
+            WindowRegistrations.Target<ai.rever.boss.plugin.api.ShortcutActionProvider>(
+                "shortcutAction",
+                ai.rever.boss.components.plugin.registries.PluginShortcutRegistryImpl::register,
+                ai.rever.boss.components.plugin.registries.PluginShortcutRegistryImpl::unregister,
+            )
+        private val statusBarItems =
+            WindowRegistrations.Target<ai.rever.boss.plugin.api.StatusBarItemProvider>(
+                "statusBarItem",
+                ai.rever.boss.components.plugin.registries.StatusBarRegistryImpl::register,
+                ai.rever.boss.components.plugin.registries.StatusBarRegistryImpl::unregister,
+            )
+
         // Persisted plugins loading state
         @Volatile
         private var persistedPluginsLoaded = false
@@ -182,6 +236,77 @@ class DefaultPlugin(
         var loadPersistedPluginsInternal: suspend (DynamicPluginManager) -> Unit = { _ ->
             // Default no-op - platform-specific code should set this
         }
+
+        /**
+         * Authoritative check for protected system plugin IDs when no manager has loaded them yet.
+         * Platform-specific desktop initialization sets this to SystemPluginManifestService / PluginStoreSetup.
+         */
+        @Volatile
+        var isAuthoritativeSystemPlugin: (String) -> Boolean = { pluginId ->
+            pluginId == MicrokernelRuntime.PLUGIN_ID ||
+                pluginId.startsWith("ai.rever.boss.system.") ||
+                pluginId == "ai.rever.boss.plugin.api"
+        }
+
+        internal fun findActiveDevJars(devDir: File): List<File> =
+            DevPluginArtifacts
+                .findAllActiveDevJars(devDir, deepValidate = true)
+
+        internal fun extractPluginId(jarFile: File): String =
+            readManifestIdFromJar(jarFile)
+                ?: jarFile.nameWithoutExtension
+
+        private fun readManifestIdFromJar(jarFile: File): String? =
+            if (!jarFile.exists() || jarFile.length() == 0L) {
+                null
+            } else {
+                readManifestText(jarFile)?.let(DevPluginArtifacts::extractPluginIdFromManifestText)
+            }
+
+        private fun readManifestText(jarFile: File): String? =
+            try {
+                java.util.jar.JarFile(jarFile).use { jar ->
+                    readEntryText(jar)
+                }
+            } catch (_: Exception) {
+                null
+            }
+
+        private fun readEntryText(jar: java.util.jar.JarFile): String? {
+            val entry =
+                jar.getJarEntry("META-INF/boss-plugin/plugin.json")
+                    ?: jar.getJarEntry("plugin.json")
+                    ?: return null
+            return jar.getInputStream(entry).use { stream ->
+                DevPluginArtifacts.readBoundedUtf8String(stream)
+            }
+        }
+
+        internal fun deduplicateJars(
+            jars: List<File>,
+            isProtectedPredicate: (String) -> Boolean = { false },
+        ): List<File> =
+            jars
+                .filterNot { file ->
+                    DevPluginArtifacts.isDevPluginJar(file) &&
+                        isProtectedPredicate(extractPluginId(file))
+                }.groupBy { extractPluginId(it) }
+                .mapValues { (pluginId, group) ->
+                    group.maxByOrNull { file ->
+                        val isDev =
+                            DevPluginArtifacts
+                                .isDevPluginJar(file)
+                        val isProtected = isProtectedPredicate(pluginId)
+                        val versionBonus =
+                            when {
+                                isProtected && isDev -> -10_000_000_000_000L
+                                isDev -> 10_000_000_000_000L
+                                else -> 0L
+                            }
+                        versionBonus + file.lastModified()
+                    } ?: group.first()
+                }.values
+                .toList()
     }
 
     private val logger = BossLogger.forComponent("DefaultPlugin")
@@ -564,7 +689,7 @@ class DefaultPlugin(
      * Plugins can implement SearchProvider to contribute results to Spotlight.
      */
     override fun registerSearchProvider(provider: SearchProvider) {
-        SearchRegistryImpl.registerProvider(provider)
+        registrations.register(searchProviders, provider.providerId, owner = registrationOwner, value = provider)
         logger.debug(
             LogCategory.SYSTEM,
             "Search provider registered",
@@ -578,12 +703,13 @@ class DefaultPlugin(
      * Unregister a search provider.
      */
     override fun unregisterSearchProvider(providerId: String) {
-        SearchRegistryImpl.unregisterProvider(providerId)
+        val outcome = registrations.unregister(searchProviders, providerId, owner = registrationOwner)
         logger.debug(
             LogCategory.SYSTEM,
             "Search provider unregistered",
             mapOf(
                 "providerId" to providerId,
+                "outcome" to outcome.name,
             ),
         )
     }
@@ -595,8 +721,7 @@ class DefaultPlugin(
     // ============================================================
 
     override fun registerMcpToolProvider(provider: ai.rever.boss.plugin.api.McpToolProvider) {
-        ai.rever.boss.mcp.McpToolRegistryImpl
-            .registerProvider(provider)
+        registrations.register(mcpToolProviders, provider.providerId, owner = registrationOwner, value = provider)
         logger.debug(
             LogCategory.SYSTEM,
             "MCP tool provider registered",
@@ -607,13 +732,13 @@ class DefaultPlugin(
     }
 
     override fun unregisterMcpToolProvider(providerId: String) {
-        ai.rever.boss.mcp.McpToolRegistryImpl
-            .unregisterProvider(providerId)
+        val outcome = registrations.unregister(mcpToolProviders, providerId, owner = registrationOwner)
         logger.debug(
             LogCategory.SYSTEM,
             "MCP tool provider unregistered",
             mapOf(
                 "providerId" to providerId,
+                "outcome" to outcome.name,
             ),
         )
     }
@@ -630,53 +755,43 @@ class DefaultPlugin(
     // ============================================================
 
     override fun registerPanelMenuContribution(contribution: ai.rever.boss.plugin.api.PanelMenuContribution) {
-        ai.rever.boss.components.plugin.registries.PanelMenuRegistryImpl
-            .register(contribution)
+        registrations.register(panelMenus, contribution.contributionId, owner = registrationOwner, value = contribution)
     }
 
     override fun unregisterPanelMenuContribution(contributionId: String) {
-        ai.rever.boss.components.plugin.registries.PanelMenuRegistryImpl
-            .unregister(contributionId)
+        registrations.unregister(panelMenus, contributionId, owner = registrationOwner)
     }
 
     override fun registerSettingsPage(provider: ai.rever.boss.plugin.api.SettingsPageProvider) {
-        ai.rever.boss.components.plugin.registries.SettingsPageRegistryImpl
-            .register(provider)
+        registrations.register(settingsPages, provider.pageId, owner = registrationOwner, value = provider)
     }
 
     override fun unregisterSettingsPage(pageId: String) {
-        ai.rever.boss.components.plugin.registries.SettingsPageRegistryImpl
-            .unregister(pageId)
+        registrations.unregister(settingsPages, pageId, owner = registrationOwner)
     }
 
     override fun registerDeepLinkActionHandler(handler: ai.rever.boss.plugin.api.DeepLinkActionHandler) {
-        ai.rever.boss.components.plugin.registries.DeepLinkActionRegistryImpl
-            .register(handler)
+        registrations.register(deepLinkActions, handler.handlerId, owner = registrationOwner, value = handler)
     }
 
     override fun unregisterDeepLinkActionHandler(handlerId: String) {
-        ai.rever.boss.components.plugin.registries.DeepLinkActionRegistryImpl
-            .unregister(handlerId)
+        registrations.unregister(deepLinkActions, handlerId, owner = registrationOwner)
     }
 
     override fun registerShortcutActionProvider(provider: ai.rever.boss.plugin.api.ShortcutActionProvider) {
-        ai.rever.boss.components.plugin.registries.PluginShortcutRegistryImpl
-            .register(provider)
+        registrations.register(shortcutActions, provider.providerId, owner = registrationOwner, value = provider)
     }
 
     override fun unregisterShortcutActionProvider(providerId: String) {
-        ai.rever.boss.components.plugin.registries.PluginShortcutRegistryImpl
-            .unregister(providerId)
+        registrations.unregister(shortcutActions, providerId, owner = registrationOwner)
     }
 
     override fun registerStatusBarItem(provider: ai.rever.boss.plugin.api.StatusBarItemProvider) {
-        ai.rever.boss.components.plugin.registries.StatusBarRegistryImpl
-            .register(provider)
+        registrations.register(statusBarItems, provider.itemId, owner = registrationOwner, value = provider)
     }
 
     override fun unregisterStatusBarItem(itemId: String) {
-        ai.rever.boss.components.plugin.registries.StatusBarRegistryImpl
-            .unregister(itemId)
+        registrations.unregister(statusBarItems, itemId, owner = registrationOwner)
     }
 
     // Split view operations for plugins that need tab/panel operations
@@ -1107,6 +1222,9 @@ class DefaultPlugin(
             dynamicPluginManager.disposeWindow()
             sandboxManager.dispose()
         }
+        // After the teardown above, so it only catches what a plugin's teardown did not remove: none of it
+        // may be served again when another window later lets go of the same id.
+        registrations.release(registrationOwner)
         // Providers that registered themselves with a process-wide singleton, or that own a
         // coroutine, do not go away with `pluginScope` - it is not their scope. Only the ones
         // actually built: see [logDataProviderDelegate].
@@ -1180,12 +1298,20 @@ class DefaultPlugin(
                 // updater can replace jars while startup is in flight — a listing
                 // captured at init would try already-deleted files and never see
                 // freshly downloaded ones.
-                val jarFiles =
+                val standardJars =
                     pluginDir.listFiles { file ->
                         file.isFile && file.extension == "jar" &&
                             // Skip microkernel runtime — it's a classpath dependency for OOP plugins, not a loadable plugin
                             !file.name.startsWith(MicrokernelRuntime.ARTIFACT_PREFIX)
                     } ?: emptyArray()
+
+                val devJars = findActiveDevJars(DevPluginArtifacts.stagingRoot())
+                val jarFiles =
+                    deduplicateJars(standardJars.toList() + devJars) { pluginId ->
+                        manager.isSystemPlugin(pluginId) ||
+                            isAuthoritativeSystemPlugin(pluginId) ||
+                            HotReloadPolicy.requiresRestartInsteadOfHotReload(pluginId)
+                    }
 
                 if (jarFiles.isEmpty()) {
                     logger.debug(
@@ -1218,63 +1344,148 @@ class DefaultPlugin(
                         .map { it.jarPath }
                         .toSet()
 
+                val standardJarsById = standardJars.associateBy { extractPluginId(it) }
+
                 for (jarFile in jarFiles) {
-                    if (jarFile.absolutePath in trackedJarPaths) continue
-                    try {
-                        logger.info(
-                            LogCategory.SYSTEM,
-                            "Installing external plugin",
-                            mapOf(
-                                "file" to jarFile.name,
-                            ),
-                        )
-
-                        val result = manager.installPlugin(jarFile.absolutePath)
-
-                        if (result.isSuccess) {
-                            val info = result.getOrThrow()
-                            logger.info(
-                                LogCategory.SYSTEM,
-                                "External plugin loaded successfully",
-                                mapOf(
-                                    "pluginId" to info.manifest.pluginId,
-                                    "version" to info.manifest.version,
-                                    "displayName" to info.manifest.displayName,
-                                ),
-                            )
-                        } else if (result.exceptionOrNull()?.message?.startsWith(PluginLoadException.ALREADY_LOADED_PREFIX) == true) {
-                            // A second jar for a plugin that's already running — a
-                            // stale old version left in the directory, not a failure.
-                            logger.info(
-                                LogCategory.SYSTEM,
-                                "Skipping duplicate jar for already-loaded plugin",
-                                mapOf(
-                                    "file" to jarFile.name,
-                                ),
-                            )
+                    val fallbackJar =
+                        if (DevPluginArtifacts.isDevPluginJar(jarFile)) {
+                            standardJarsById[extractPluginId(jarFile)]?.takeIf { it != jarFile }
                         } else {
-                            logger.error(
-                                LogCategory.SYSTEM,
-                                "Failed to load external plugin",
-                                mapOf(
-                                    "file" to jarFile.name,
-                                    "error" to (result.exceptionOrNull()?.message ?: "unknown"),
-                                ),
-                            )
+                            null
                         }
-                    } catch (e: Exception) {
-                        logger.error(
-                            LogCategory.SYSTEM,
-                            "Exception loading external plugin",
-                            mapOf(
-                                "file" to jarFile.name,
-                            ),
-                            e,
-                        )
-                    }
+                    installSingleExternalPlugin(manager, jarFile, trackedJarPaths, fallbackJar)
                 }
             }
     }
+
+    internal suspend fun installSingleExternalPlugin(
+        manager: DynamicPluginManager,
+        jarFile: File,
+        trackedJarPaths: Set<String>,
+        fallbackStandardJar: File? = null,
+    ) {
+        if (jarFile.absolutePath in trackedJarPaths) return
+        try {
+            logger.info(
+                LogCategory.SYSTEM,
+                "Installing external plugin",
+                mapOf("file" to jarFile.name),
+            )
+
+            val result = manager.installPlugin(jarFile.absolutePath)
+            handleExternalPluginInstallResult(manager, jarFile, result, fallbackStandardJar)
+        } catch (e: Exception) {
+            logger.error(
+                LogCategory.SYSTEM,
+                "Exception loading external plugin",
+                mapOf("file" to jarFile.name),
+                e,
+            )
+        }
+    }
+
+    private suspend fun handleExternalPluginInstallResult(
+        manager: DynamicPluginManager,
+        jarFile: File,
+        result: Result<DynamicPluginInfo>,
+        fallbackStandardJar: File?,
+    ) {
+        val loadedInfo = result.getOrNull()
+        val isBrokenDev =
+            DevPluginArtifacts.isDevPluginJar(jarFile) &&
+                loadedInfo?.state == PluginState.DISABLED &&
+                manager.canAccess(loadedInfo.manifest)
+        val isAlreadyLoaded =
+            result.exceptionOrNull()?.message?.startsWith(PluginLoadException.ALREADY_LOADED_PREFIX) == true
+
+        when {
+            result.isSuccess && !isBrokenDev -> {
+                val info = result.getOrThrow()
+                logger.info(
+                    LogCategory.SYSTEM,
+                    "External plugin loaded successfully",
+                    mapOf(
+                        "pluginId" to info.manifest.pluginId,
+                        "version" to info.manifest.version,
+                        "displayName" to info.manifest.displayName,
+                    ),
+                )
+            }
+
+            isAlreadyLoaded -> {
+                logger.info(
+                    LogCategory.SYSTEM,
+                    "Skipping duplicate jar for already-loaded plugin",
+                    mapOf("file" to jarFile.name),
+                )
+            }
+
+            attemptFallbackOnDevFailure(manager, jarFile, fallbackStandardJar, result) -> {
+                // Fallback attempt was executed and logged
+            }
+
+            else -> {
+                logger.error(
+                    LogCategory.SYSTEM,
+                    "Failed to load external plugin",
+                    mapOf(
+                        "file" to jarFile.name,
+                        "error" to (result.exceptionOrNull()?.message ?: "Dev plugin loaded in DISABLED state"),
+                    ),
+                )
+            }
+        }
+    }
+
+    private suspend fun attemptFallbackOnDevFailure(
+        manager: DynamicPluginManager,
+        jarFile: File,
+        fallbackStandardJar: File?,
+        devResult: Result<DynamicPluginInfo>,
+    ): Boolean =
+        if (!DevPluginArtifacts.isDevPluginJar(jarFile) ||
+            fallbackStandardJar == null ||
+            !fallbackStandardJar.exists()
+        ) {
+            false
+        } else {
+            val devError =
+                devResult.exceptionOrNull()?.message
+                    ?: devResult.getOrNull()?.errorMessage
+                    ?: "Dev plugin loaded in DISABLED state"
+            logger.warn(
+                LogCategory.SYSTEM,
+                "External dev plugin failed to load; falling back to standard build",
+                mapOf(
+                    "devJar" to jarFile.name,
+                    "fallback" to fallbackStandardJar.name,
+                    "error" to devError,
+                ),
+            )
+            val fallbackResult = manager.installPlugin(fallbackStandardJar.absolutePath)
+            if (fallbackResult.isSuccess) {
+                val info = fallbackResult.getOrThrow()
+                logger.info(
+                    LogCategory.SYSTEM,
+                    "External standard plugin loaded successfully as fallback",
+                    mapOf(
+                        "pluginId" to info.manifest.pluginId,
+                        "version" to info.manifest.version,
+                        "displayName" to info.manifest.displayName,
+                    ),
+                )
+            } else {
+                logger.error(
+                    LogCategory.SYSTEM,
+                    "Fallback to standard build also failed for external plugin",
+                    mapOf(
+                        "file" to fallbackStandardJar.name,
+                        "error" to (fallbackResult.exceptionOrNull()?.message ?: "unknown"),
+                    ),
+                )
+            }
+            true
+        }
 
     // ============================================================
     // REMOVED BUNDLED PLUGINS

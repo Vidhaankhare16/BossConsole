@@ -7,6 +7,9 @@ import ai.rever.boss.plugin.api.RunConfigurationData
 import ai.rever.boss.plugin.api.RunConfigurationDataProvider
 import ai.rever.boss.plugin.api.RunConfigurationTypeData
 import io.grpc.ManagedChannel
+import io.grpc.Status
+import io.grpc.StatusException
+import io.grpc.StatusRuntimeException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -16,9 +19,13 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.util.logging.Logger
 
 /**
  * IPC proxy implementation of RunConfigurationDataProvider.
+ * Execution uses the host configuration identified by [RunConfigurationData.id].
+ * Command, argument, environment and working-directory edits in the supplied copy
+ * are ignored by the host; rescan and use a currently detected configuration.
  */
 class RunConfigDataProviderProxy(
     channel: ManagedChannel,
@@ -144,13 +151,23 @@ class RunConfigDataProviderProxy(
             clearLocalExecutionError()
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
+        } catch (error: StatusException) {
+            reportExecutionFailure(error.status.code)
+        } catch (error: StatusRuntimeException) {
+            reportExecutionFailure(error.status.code)
         } catch (_: Exception) {
-            // Do not infer a stale id from every RPC failure (transport and authorization
-            // failures can reach this path too), or expose arbitrary remote exception text.
-            synchronized(errorLock) {
-                localExecutionError = "Run could not be started."
-                _lastError.value = localExecutionError
-            }
+            // Preserve the UI boundary for non-RPC failures without exposing exception text.
+            reportExecutionFailure(Status.Code.UNKNOWN)
+        }
+    }
+
+    private fun reportExecutionFailure(code: Status.Code) {
+        Logger
+            .getLogger(RunConfigDataProviderProxy::class.java.name)
+            .warning("Run configuration RPC failed: ${code.name}")
+        synchronized(errorLock) {
+            localExecutionError = "Run could not be started."
+            _lastError.value = localExecutionError
         }
     }
 

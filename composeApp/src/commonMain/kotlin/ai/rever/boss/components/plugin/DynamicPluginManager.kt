@@ -363,7 +363,7 @@ class DynamicPluginManager(
          */
         private val swapScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
-        private fun activeManagers(): List<DynamicPluginManager> {
+        internal fun activeManagers(): List<DynamicPluginManager> {
             liveManagers.removeIf { it.get() == null }
             return liveManagers.mapNotNull { it.get() }
         }
@@ -803,7 +803,7 @@ class DynamicPluginManager(
      *   plugin's [PluginManifest.requiredPermissions]. An empty list (legacy
      *   plugins) means "available to any authenticated user".
      */
-    private fun canAccess(manifest: PluginManifest): Boolean =
+    internal fun canAccess(manifest: PluginManifest): Boolean =
         pluginAccessAllowed(
             isAdmin = _isAdmin.value,
             userPermissions = _userPermissions.value,

@@ -38,6 +38,10 @@ import kotlinx.coroutines.flow.flow
  * refused before [RunExecutionService] ever sees it, and every other field in the request
  * (command, arguments, working directory, environment) is discarded rather than trusted, so
  * tampering with them while reusing a real id buys nothing.
+ *
+ * This is process authentication, not per-window or per-project authorization:
+ * authenticated plugins may still choose the scan path and target window, as the
+ * in-process provider API permits. No caller-supplied command is executed.
  */
 // One method per RPC the generated service base class declares, plus two small private helpers.
 @Suppress("TooManyFunctions")

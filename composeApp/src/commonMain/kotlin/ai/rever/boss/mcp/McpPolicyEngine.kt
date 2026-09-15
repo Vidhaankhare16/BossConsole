@@ -65,6 +65,15 @@ sealed interface McpProactivePolicyOutcome {
     ) : McpProactivePolicyOutcome
 }
 
+/** One explicitly reviewed change in a host UI section snapshot. */
+data class McpSectionPolicyChange(
+    val toolName: String,
+    val providerId: String,
+    val expectedRevocation: Long,
+    val expectedRule: McpPolicyAction?,
+    val action: McpPolicyAction,
+)
+
 /**
  * Manages MCP tool execution policies (ALLOW / ASK / DENY).
  *
@@ -329,6 +338,48 @@ class McpPolicyEngine(
                 failureMessage = "Failed to persist MCP policy update",
                 faultFor = { k, e -> McpPolicyFault.PolicyPersistFailed(k, e) },
             )
+        }
+
+    /** Save a reviewed section in one durable write; concurrent edits invalidate the whole snapshot. */
+    fun setSectionPolicies(changes: List<McpSectionPolicyChange>): McpProactivePolicyOutcome =
+        synchronized(lock) {
+            if (_fault.value is McpPolicyFault.PersistedPolicyUnreadable) {
+                return@synchronized McpProactivePolicyOutcome.PolicyUnreadable
+            }
+            if (changes.isEmpty() || changes.distinctBy { it.toolName }.size != changes.size) {
+                return@synchronized McpProactivePolicyOutcome.Refused
+            }
+            if (changes.any {
+                    revocationVersion(it.toolName, it.providerId) != it.expectedRevocation ||
+                        _config.value.rules[it.toolName] != it.expectedRule
+                }
+            ) {
+                return@synchronized McpProactivePolicyOutcome.Refused
+            }
+            if (changes.any {
+                    it.action == McpPolicyAction.ALLOW &&
+                        _config.value.providerRules[it.providerId] == McpPolicyAction.DENY
+                }
+            ) {
+                return@synchronized McpProactivePolicyOutcome.Denied
+            }
+            val outcome =
+                writeConfig(
+                    key = "${changes.size} tools",
+                    logKey = "section",
+                    updated =
+                        _config.value.copy(
+                            rules = _config.value.rules + changes.associate { it.toolName to it.action },
+                        ),
+                    successMessage = "Updated section tool policies",
+                    failureMessage = "Failed to persist MCP section policies",
+                    faultFor = { k, e -> McpPolicyFault.PolicyPersistFailed(k, e) },
+                )
+            if (outcome == McpProactivePolicyOutcome.Saved) {
+                changes.forEach { revocations[it.toolName] = revocationVersion(it.toolName) + 1 }
+                _sessionTrustedTools.update { trusted -> trusted - changes.map { it.toolName }.toSet() }
+            }
+            outcome
         }
 
     /**

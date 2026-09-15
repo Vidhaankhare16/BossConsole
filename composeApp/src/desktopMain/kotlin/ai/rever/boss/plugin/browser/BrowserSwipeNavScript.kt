@@ -69,7 +69,11 @@ internal object BrowserSwipeNavScript {
         canGoForward: Boolean,
     ): String = "window.$STATE_PROPERTY = { enabled: $enabled, back: $canGoBack, forward: $canGoForward };"
 
-    /** Only typed native values cross this boundary; use the same statement in parity tests. */
+    /**
+     * Only typed native values cross this boundary; use the same statement in parity tests.
+     * JVM Double rendering yields numeric literals or NaN/Infinity, all valid JS expressions;
+     * no page-supplied text is interpolated here.
+     */
     fun release(end: ScrollGestureEnd): String {
         val function = "window.$RELEASE_PROPERTY"
         return "$function && $function('${end.id}', ${end.cancelled}, ${end.accumX}, ${end.rejected});"

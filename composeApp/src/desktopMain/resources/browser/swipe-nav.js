@@ -142,9 +142,13 @@
     // Sheets renders cells on a canvas, with a sibling native scrollbar. Read only geometry,
     // never cells. Its document overscroll policy and cancelled wheels also cover the canvas
     // at its boundary, so this explicit adapter allows a NEW outward gesture there.
+    function isSheetsDocument() {
+        return w.location && w.location.hostname === 'docs.google.com' &&
+            w.location.pathname.indexOf('/spreadsheets/') === 0;
+    }
+
     function sheetsBoundary(path) {
-        if (!w.location || w.location.hostname !== 'docs.google.com' ||
-            w.location.pathname.indexOf('/spreadsheets/') !== 0) return null;
+        if (!isSheetsDocument()) return null;
         for (var i = 0; i < path.length; i++) {
             var el = path[i];
             if (!el || typeof el.closest !== 'function') continue;
@@ -356,6 +360,8 @@
         direction = 0;
         scrollPath = null;
         lastWheelEvent = null;
+        capturedWheel = null;
+        capturedSheetBoundary = null;
         sheetBoundary = null;
         sheetEdgeNavigation = false;
         reachedCommit = false;
@@ -424,6 +430,11 @@
     }
 
     function onWheel(event) {
+        // Consume the capture snapshot before a new native contact resets old state.
+        var hasCapture = capturedWheel === event;
+        var eventBoundary = hasCapture ? capturedSheetBoundary : null;
+        capturedWheel = null;
+        capturedSheetBoundary = null;
         // Cheap filters precede the synchronous renderer-to-host claim. Do not skip vertical
         // pixel events: their initial scroll chain must retain ownership if the contact curls.
         if (switchedOff()) { reset(); return; }
@@ -465,7 +476,7 @@
 
         if (!scrollPath) {
             scrollPath = eventPath(event);
-            sheetBoundary = capturedWheel === event ? capturedSheetBoundary : sheetsBoundary(scrollPath);
+            sheetBoundary = hasCapture ? eventBoundary : sheetsBoundary(scrollPath);
         }
 
         if (!sheetBoundary && lastWheelEvent && lastWheelEvent.defaultPrevented) abandon();
@@ -568,7 +579,18 @@
     // passive keeps this observer off Chromium's scroll-blocking path.
     w.addEventListener('wheel', function (event) {
         capturedWheel = event;
-        capturedSheetBoundary = switchedOff() || event.deltaMode !== 0 ? null : sheetsBoundary(eventPath(event));
+        capturedSheetBoundary = switchedOff() || event.deltaMode !== 0 || !isSheetsDocument()
+            ? null : sheetsBoundary(eventPath(event));
+        // A page may stop propagation before our bubble listener. Release that event's target
+        // after dispatch anyway, rather than retaining a detached subtree until another wheel.
+        if (typeof w.queueMicrotask === 'function') {
+            w.queueMicrotask(function () {
+                if (capturedWheel === event) {
+                    capturedWheel = null;
+                    capturedSheetBoundary = null;
+                }
+            });
+        }
     }, { capture: true, passive: true });
     w.addEventListener('wheel', onWheel, { capture: false, passive: true });
     // pagehide is NOT routed through decide() - the page is already unloading, so navigating

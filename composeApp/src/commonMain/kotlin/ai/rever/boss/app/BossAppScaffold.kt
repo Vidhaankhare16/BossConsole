@@ -60,6 +60,7 @@ import ai.rever.boss.plugin.ui.BossTheme
 import ai.rever.boss.services.bookmarks.BookmarkAPIAccess
 import ai.rever.boss.updater.UpdateAvailableDialog
 import ai.rever.boss.updater.UpdateBanner
+import ai.rever.boss.updater.UpdateDialogGate
 import ai.rever.boss.updater.UpdateState
 import ai.rever.boss.updater.drawsBanner
 import ai.rever.boss.updater.rememberUpdateDialogOwnership
@@ -571,7 +572,13 @@ internal fun BossAppScaffold(
                 val showUpdateDialog by updateHandle.showUpdateDialog.collectAsState()
                 val isUpdateDialogOwner = rememberUpdateDialogOwnership(state.windowId)
                 val updateStateForDialog = updateState
-                if (showUpdateDialog && isUpdateDialogOwner && updateStateForDialog is UpdateState.UpdateAvailable) {
+                UpdateDialogGate(
+                    wantDialog = showUpdateDialog,
+                    isOwner = isUpdateDialogOwner,
+                    updateAvailable = updateStateForDialog is UpdateState.UpdateAvailable,
+                ) {
+                    // Re-test for the smart cast inside the gated content.
+                    if (updateStateForDialog !is UpdateState.UpdateAvailable) return@UpdateDialogGate
                     UpdateAvailableDialog(
                         updateInfo = updateStateForDialog.updateInfo,
                         onUpdateNow = {

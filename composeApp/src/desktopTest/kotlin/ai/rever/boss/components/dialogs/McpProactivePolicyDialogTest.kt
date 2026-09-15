@@ -1,8 +1,12 @@
 package ai.rever.boss.components.dialogs
 
+import ai.rever.boss.components.home.LocalPluginStates
 import ai.rever.boss.components.overlays.resetOverlayFieldForTest
+import ai.rever.boss.components.plugin.DynamicPluginInfo
 import ai.rever.boss.mcp.McpPolicyAction
 import ai.rever.boss.mcp.McpProactivePolicyOutcome
+import ai.rever.boss.plugin.api.PluginManifest
+import ai.rever.boss.plugin.api.PluginState
 import ai.rever.boss.plugin.ui.BossBlueprintColorScheme
 import ai.rever.boss.plugin.ui.BossBlueprintLightColorScheme
 import ai.rever.boss.plugin.ui.BossOverlayHost
@@ -20,17 +24,23 @@ import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.platform.WindowInfo
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onLast
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.flow.MutableStateFlow
 import org.junit.After
 import org.junit.Before
 import org.junit.Rule
@@ -79,7 +89,8 @@ class McpProactivePolicyDialogTest {
                     },
             ) {
                 val width = (if (windowSize.width > 0) windowSize.width else 700).dp
-                Box(Modifier.size(width, 360.dp).clipToBounds()) { content() }
+                val height = (if (windowSize.height > 0) windowSize.height else 360).dp
+                Box(Modifier.size(width, height).clipToBounds()) { content() }
             }
         }
         rule.mainClock.advanceTimeBy(250)
@@ -91,7 +102,8 @@ class McpProactivePolicyDialogTest {
         if (System.getenv("BOSS_REVIEW_CAPTURE") == "1") captureLayout()
         rule.onNodeWithText("Close").assertIsDisplayed()
         val bounds = rule.onNodeWithText("Close").getUnclippedBoundsInRoot()
-        assertTrue(bounds.top >= 0.dp && bounds.bottom <= 360.dp, "Close bounds: $bounds")
+        val windowBounds = rule.onRoot().getUnclippedBoundsInRoot()
+        assertTrue(bounds.top >= windowBounds.top && bounds.bottom <= windowBounds.bottom, "Close bounds: $bounds")
     }
 
     private fun captureLayout() {
@@ -121,6 +133,193 @@ class McpProactivePolicyDialogTest {
         closeIsInsideWindow()
         rule.onNodeWithText("Close").performClick()
         rule.runOnIdle { assertTrue(closed) }
+    }
+
+    @Test fun `view excludes risk-classified vault tools even when declared read only`() {
+        val vault = McpToolIdentity("secrets_list", "vault", 0, readOnly = true)
+        val prefixed = vault.copy(toolName = "mcp__boss__secrets_list")
+        assertTrue(!vault.isViewTool())
+        assertTrue(!prefixed.isViewTool())
+        assertEquals(emptySet(), sectionSelection(listOf(vault, prefixed), McpSectionMode.View))
+        assertEquals(
+            McpSectionMode.None,
+            savedSectionMode(listOf(vault), mapOf(vault.toolName to McpPolicyAction.DENY)),
+        )
+    }
+
+    @Test fun `sensitive grants require review and remain retryable after failure`() {
+        val tools = listOf(McpToolIdentity("secrets_list", "vault", 0, "List vault entries", readOnly = true))
+        var writes = 0
+        show(windowSize = IntSize(700, 800)) {
+            McpPolicyManagerDialog(
+                emptyMap(),
+                tools,
+                { true },
+                { _, _ -> McpProactivePolicyOutcome.Saved },
+                {},
+                {},
+                sectionTools = tools,
+                onApplySection = {
+                    writes++
+                    if (writes == 1) McpProactivePolicyOutcome.Failed("disk") else McpProactivePolicyOutcome.Saved
+                },
+            )
+        }
+        rule.onNodeWithContentDescription("All for all sections").performScrollTo().performClick()
+        rule.onNodeWithText("Review sensitive allows").performScrollTo().performClick()
+        rule.runOnIdle { assertEquals(0, writes) }
+        rule.onNodeWithText("secrets_list · HIGH", substring = true).assertExists()
+        captureTheme = "sensitive-dark"
+        closeIsInsideWindow()
+        rule.onNodeWithText("Confirm sensitive allows").performScrollTo().performClick()
+        rule.onNodeWithText("Review sensitive allows").assertExists()
+        rule.onNodeWithText("Could not save", substring = true).assertExists()
+        rule.onNodeWithText("Review sensitive allows").performScrollTo().performClick()
+        rule.onNodeWithText("Confirm sensitive allows").performScrollTo().performClick()
+        rule.runOnIdle { assertEquals(2, writes) }
+    }
+
+    @Test fun `saved policy search matches plugin names and sensitive review includes denials`() {
+        val tool = McpToolIdentity("read", "plugin.id", 0, "Read current state", readOnly = true)
+        val rules = mapOf("read" to McpPolicyAction.DENY)
+        assertEquals(rules, filterSavedPolicies(rules, listOf(tool), "Documents", mapOf("plugin.id" to "Documents")))
+        assertEquals(listOf(tool), sensitiveAllows(listOf(tool), setOf("read"), rules))
+        assertEquals("Saved: Ask before running", savedPolicyLabel(McpPolicyAction.ASK))
+    }
+
+    @Test fun `global none includes sections hidden by search and waits for confirmation`() {
+        val tools =
+            listOf(
+                McpToolIdentity("read", "alpha", 0, readOnly = true),
+                McpToolIdentity("write", "beta", 0),
+            )
+        var saved = emptyList<ai.rever.boss.mcp.McpSectionPolicyChange>()
+        val plugins =
+            MutableStateFlow(
+                mapOf(
+                    "alpha" to
+                        DynamicPluginInfo(
+                            PluginManifest(
+                                pluginId = "alpha",
+                                displayName = "Documents",
+                                version = "1.0.0",
+                                mainClass = "alpha.Main",
+                                apiVersion = "1.0.0",
+                            ),
+                            "/plugins/alpha.jar",
+                            PluginState.LOADED,
+                            0L,
+                            true,
+                        ),
+                ),
+            )
+        show(windowSize = IntSize(700, 800)) {
+            CompositionLocalProvider(LocalPluginStates provides plugins) {
+                McpPolicyManagerDialog(
+                    emptyMap(),
+                    tools,
+                    { true },
+                    { _, _ -> McpProactivePolicyOutcome.Saved },
+                    {},
+                    {},
+                    sectionTools = tools,
+                    onApplySection = {
+                        saved = it
+                        McpProactivePolicyOutcome.Saved
+                    },
+                )
+            }
+        }
+        rule.onNodeWithText("Find a tool or provider").performTextInput("Documents")
+        rule.onAllNodesWithText("Documents", substring = false).assertCountEquals(2)
+        rule.onNodeWithContentDescription("None for all sections").performScrollTo().performClick()
+        rule.runOnIdle { assertTrue(saved.isEmpty()) }
+        captureTheme = "global-dark"
+        closeIsInsideWindow()
+        rule.onNodeWithText("Confirm all sections").performScrollTo().performClick()
+        rule.runOnIdle {
+            assertEquals(setOf("alpha", "beta"), saved.map { it.providerId }.toSet())
+            assertTrue(saved.all { it.action == McpPolicyAction.DENY })
+        }
+    }
+
+    @Test fun `custom selection works in a short light window`() {
+        val tools = listOf(McpToolIdentity("read", "provider", 0, "Read the current document", readOnly = true))
+        var saved = emptyList<ai.rever.boss.mcp.McpSectionPolicyChange>()
+        show(light = true) {
+            McpPolicyManagerDialog(
+                emptyMap(),
+                tools,
+                { true },
+                { _, _ -> McpProactivePolicyOutcome.Saved },
+                {},
+                {},
+                sectionTools = tools,
+                onApplySection = {
+                    saved = it
+                    McpProactivePolicyOutcome.Saved
+                },
+            )
+        }
+        rule.onNodeWithText("Custom", substring = false).performScrollTo().performClick()
+        rule.onNodeWithContentDescription("Allow read").performScrollTo().performClick()
+        rule.runOnIdle { assertTrue(saved.isEmpty()) }
+        captureTheme = "sections-light"
+        closeIsInsideWindow()
+        rule.onNodeWithText("Confirm section changes").performScrollTo().performClick()
+        rule.runOnIdle { assertEquals(McpPolicyAction.ALLOW, saved.single().action) }
+    }
+
+    @Test fun `all and update presets cover the entire section and saved mode is restored`() {
+        val tools =
+            listOf(
+                McpToolIdentity("read", "p", 0, readOnly = true),
+                McpToolIdentity("write", "p", 0, readOnly = false),
+            )
+        assertEquals(setOf("read", "write"), sectionSelection(tools, McpSectionMode.All))
+        assertEquals(setOf("write"), sectionSelection(tools, McpSectionMode.Edit))
+        assertEquals(McpSectionMode.Custom, savedSectionMode(tools, emptyMap()))
+        assertEquals(
+            McpSectionMode.View,
+            savedSectionMode(tools, mapOf("read" to McpPolicyAction.ALLOW, "write" to McpPolicyAction.DENY)),
+        )
+    }
+
+    @Test fun `view section preset stages all rules and excludes known mutations`() {
+        val tools =
+            listOf(
+                McpToolIdentity("read", "provider", 0, "Read current state", readOnly = true),
+                McpToolIdentity("k8s_delete", "provider", 0, "Delete a workload", readOnly = true),
+            )
+        var saved = emptyList<ai.rever.boss.mcp.McpSectionPolicyChange>()
+        show(windowSize = IntSize(700, 800)) {
+            McpPolicyManagerDialog(
+                emptyMap(),
+                tools,
+                { true },
+                { _, _ -> McpProactivePolicyOutcome.Saved },
+                {},
+                {},
+                sectionTools = tools,
+                onApplySection = {
+                    saved = it
+                    McpProactivePolicyOutcome.Saved
+                },
+            )
+        }
+        rule
+            .onAllNodesWithText("View", substring = false)
+            .onLast()
+            .performScrollTo()
+            .performClick()
+        rule.runOnIdle { assertTrue(saved.isEmpty()) }
+        captureTheme = "sections-dark"
+        closeIsInsideWindow()
+        rule.onNodeWithText("Confirm section changes").performScrollTo().performClick()
+        rule.runOnIdle {
+            assertEquals(listOf(McpPolicyAction.ALLOW, McpPolicyAction.DENY), saved.map { it.action })
+        }
+        closeIsInsideWindow()
     }
 
     @Test fun `long descriptions remain readable without changing a policy`() {

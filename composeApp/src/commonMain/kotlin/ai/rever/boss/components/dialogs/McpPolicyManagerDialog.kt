@@ -3,6 +3,7 @@ package ai.rever.boss.components.dialogs
 import ai.rever.boss.mcp.McpMutatingToolCatalog
 import ai.rever.boss.mcp.McpPolicyAction
 import ai.rever.boss.mcp.McpProactivePolicyOutcome
+import ai.rever.boss.mcp.McpSectionPolicyChange
 import ai.rever.boss.mcp.sandbox.DefaultMcpRiskEvaluator
 import ai.rever.boss.plugin.api.McpToolArgs
 import ai.rever.boss.plugin.ui.BossColorScheme
@@ -89,6 +90,8 @@ fun McpPolicyManagerDialog(
     onSetPolicy: suspend (tool: McpToolIdentity, action: McpPolicyAction) -> McpProactivePolicyOutcome,
     onRefreshCandidates: () -> Unit,
     onDismiss: () -> Unit,
+    sectionTools: List<McpToolIdentity>? = null,
+    onApplySection: (suspend (List<McpSectionPolicyChange>) -> McpProactivePolicyOutcome)? = null,
 ) {
     val windowSize = LocalWindowInfo.current.containerSize
     val windowHeight = with(LocalDensity.current) { windowSize.height.toDp() }
@@ -109,7 +112,7 @@ fun McpPolicyManagerDialog(
     // row's button, or dismissing, drops any pending confirmation rather than carrying it silently.
     var confirmingDeny by remember { mutableStateOf<String?>(null) }
     var query by remember { mutableStateOf("") }
-    val filteredRules = rules.filterKeys { it.contains(query.trim(), ignoreCase = true) }
+    val filteredRules = filterSavedPolicies(rules, sectionTools, query, mcpPolicyPluginNames(), availableTools)
     val filteredTools =
         availableTools.filter {
             it.matchesPolicyQuery(query)
@@ -158,6 +161,31 @@ fun McpPolicyManagerDialog(
                                 placeholderColor = colors.textSecondary,
                                 backgroundColor = colors.textSecondary.copy(alpha = 0.04f),
                             ),
+                    )
+                    Spacer(modifier = Modifier.height(20.dp))
+                    Text(
+                        text = policyToolsHeading(sectionTools, availableTools),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = colors.textPrimary,
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = policyToolsDescription(sectionTools),
+                        fontSize = 11.sp,
+                        color = colors.textSecondary,
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    PolicyToolContent(
+                        sectionTools,
+                        rules,
+                        query,
+                        onApplySection,
+                        onRefreshCandidates,
+                        filteredTools,
+                        availableTools.isNotEmpty(),
+                        onSetPolicy,
+                        colors,
                     )
                     Spacer(modifier = Modifier.height(20.dp))
                     Text(
@@ -256,30 +284,6 @@ fun McpPolicyManagerDialog(
                                 }
                             }
                         }
-
-                        Spacer(modifier = Modifier.height(20.dp))
-                        Text(
-                            text = "Available tools · ${availableTools.size}",
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = colors.textPrimary,
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text =
-                                "Choose Allow or Deny for a tool without a saved rule. " +
-                                    "Rules follow the tool name, including replacement plugins.",
-                            fontSize = 11.sp,
-                            color = colors.textSecondary,
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        FilteredPolicyCandidates(
-                            filteredTools,
-                            availableTools.isNotEmpty(),
-                            onSetPolicy,
-                            onRefreshCandidates,
-                            colors,
-                        )
                     }
                 }
                 Spacer(modifier = Modifier.height(16.dp))
@@ -340,6 +344,7 @@ data class McpToolIdentity(
     val providerId: String,
     val expectedRevocation: Long,
     val description: String = "",
+    val readOnly: Boolean = false,
 )
 
 /**
@@ -537,3 +542,22 @@ internal fun McpProactivePolicyOutcome.proactivePolicyMessage(): String? =
             "Could not save this rule. Check the host log and storage, then try again."
         }
     }
+
+@Composable
+private fun PolicyToolContent(
+    sections: List<McpToolIdentity>?,
+    rules: Map<String, McpPolicyAction>,
+    query: String,
+    onApply: (suspend (List<McpSectionPolicyChange>) -> McpProactivePolicyOutcome)?,
+    onRefresh: () -> Unit,
+    filteredTools: List<McpToolIdentity>,
+    hasTools: Boolean,
+    onSet: suspend (McpToolIdentity, McpPolicyAction) -> McpProactivePolicyOutcome,
+    colors: BossColorScheme,
+) {
+    if (sections != null && onApply != null) {
+        McpPolicySections(sections, rules, query, onApply, onRefresh)
+    } else {
+        FilteredPolicyCandidates(filteredTools, hasTools, onSet, onRefresh, colors)
+    }
+}

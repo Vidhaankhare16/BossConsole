@@ -354,12 +354,17 @@ private fun McpPolicyManagerStatusItem(persistedPolicyConfig: McpToolPolicyConfi
     var showPolicyManager by remember { mutableStateOf(false) }
     val ruleCount = persistedPolicyConfig.rules.size
     if (ruleCount > 0 || allTools.isNotEmpty()) {
-        BossActionButton(
-            imageVector = Icons.Outlined.Tune,
-            text = if (ruleCount > 0) "Tool policies ($ruleCount)" else "Tool policies",
-            color = BossTheme.colors.textSecondary,
-            onClick = { showPolicyManager = true },
-        )
+        HoverTooltipBox(
+            text = "Manage MCP tool permissions. Review, allow, deny, or reset saved rules across agents and restarts.",
+            placement = TooltipPlacement.TOP,
+        ) {
+            BossActionButton(
+                imageVector = Icons.Outlined.Tune,
+                text = if (ruleCount > 0) "Tool policies ($ruleCount)" else "Tool policies",
+                color = BossTheme.colors.textSecondary,
+                onClick = { showPolicyManager = true },
+            )
+        }
     }
     if (showPolicyManager) {
         val disabledToolNames by McpToolRegistryImpl.disabledToolNames.collectAsState()
@@ -394,18 +399,21 @@ private fun McpPolicyManagerStatusItem(persistedPolicyConfig: McpToolPolicyConfi
             // clobber it (review on #636). tool.expectedRevocation is still passed, and still
             // checked first, to catch a DENY or provider-wide reset the same way the reactive
             // path's own capture-then-recheck does.
-            onSetPolicy = { tool, action ->
-                withContext(Dispatchers.IO) {
-                    McpToolRegistryImpl.policyEngine.setToolPolicyIfAbsent(
-                        tool.toolName,
-                        action,
-                        expectedRevocation = tool.expectedRevocation,
-                        providerId = tool.providerId,
-                    )
-                }
-            },
+            onSetPolicy = ::saveProactiveToolPolicy,
             onRefreshCandidates = { candidateRefresh++ },
             onDismiss = { showPolicyManager = false },
+            sectionTools =
+                remember(allTools, persistedPolicyConfig.rules, disabledToolNames, candidateRefresh) {
+                    mcpProactivePolicyCandidates(
+                        allTools,
+                        emptyMap(),
+                        disabledToolNames,
+                        McpToolRegistryImpl.policyEngine::revocationVersion,
+                    )
+                },
+            onApplySection = { changes ->
+                withContext(Dispatchers.IO) { McpToolRegistryImpl.policyEngine.setSectionPolicies(changes) }
+            },
         )
     }
 }
@@ -445,6 +453,7 @@ internal fun mcpProactivePolicyCandidates(
                 it.providerId,
                 revocationVersion(it.definition.name, it.providerId),
                 it.definition.description,
+                it.definition.readOnly,
             )
         }.sortedBy { it.toolName }
         .toList()
