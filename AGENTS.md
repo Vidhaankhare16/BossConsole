@@ -768,6 +768,9 @@ restart. There is no Settings row and no per-site exclusion.
   `window.__bossInteractionStarted`. The sanitizers bound what can be *smuggled*
   through; nothing bounds a site lying about its own usage. Treat these as
   indicative, not as measurements, wherever a site has an incentive to lie.
+- **A page can observe the current trackpad gesture token.** The injected swipe bridge exposes
+  the process-wide contact id and begin epoch while fingers are down. It does not expose deltas,
+  but a page can poll the bridge and infer that a trackpad contact is active.
 - **Every project the user opens is now on the bus, not only plugin-initiated ones.**
   `ProjectChangeEvent` used to be published from `ProjectDataProviderImpl.selectProject`
   alone, so a path reached plugins only when a plugin had asked for the switch. It is
@@ -794,7 +797,8 @@ restart. There is no Settings row and no per-site exclusion.
 
 A two-finger horizontal trackpad swipe navigates back/forward. It is detected **inside the page**
 (`BrowserSwipeNavScript` + `swipe-nav.js`), because under `HARDWARE_ACCELERATED` the browser is a
-native surface and neither Compose nor AWT sees the wheel. JxBrowser's
+native surface and Compose does not see the wheel. JxBrowser's AWT callback sees deltas but has
+already lost the native finger and momentum phases. JxBrowser's
 `enableOverscrollHistoryNavigation` does NOT provide this - measured 2026-08-28, it does nothing for
 a trackpad in either rendering mode, because it is a touchscreen feature.
 
@@ -803,17 +807,35 @@ vertical measured as a path length and horizontal as net displacement. Chrome's 
 are fractions of the trackpad from `NSTouch.normalizedPosition`, which a page cannot see, so those
 carry over as the same fractions of the commit distance.
 
-**It commits at the end of the gesture, not on crossing the commit distance** - and "end of
-gesture" is literally `GESTURE_GAP_MS` (120ms) with no wheel event, because AWT does not surface
-NSEvent's scroll phases and a time gap is the only segmentation signal there is. So it is not
-release: holding past the line and simply STOPPING, fingers still down, commits after 120ms too.
-The window in which reversing still cancels is 120ms of continuous motion, not "until you lift".
-The decision reads the LAST horizontal position, so easing back below the line cancels.
+**It commits on a real CoreGraphics Ended phase, never on an inactivity timeout.** A listen-only
+session event tap assigns each finger sequence an id and accumulates its final point deltas. The
+page latches that id while deciding scroll ownership; only the matching native release can decide.
+A stationary hold therefore remains cancellable indefinitely. Cancelled phases reset without
+navigating, and momentum has no active finger id and is ignored. Native final displacement magnitude is
+authoritative at release (the page chooses direction) so renderer/native queue reordering cannot hide a late easing-back or
+reversal. If Input Monitoring preflight fails the feature fails closed and Settings shows how to
+grant access; this path never requests permission itself. The observer is started off the UI thread
+only while the effective setting is enabled. Disabling cancels claimants immediately and releases
+the native source and tap within the bounded run-loop poll. Re-enabling retries permission/setup;
+run-loop failures cancel the contact, clean up resources and report a distinct failure state.
+Availability reads and browser registration do not start native observation.
 
-That makes `GESTURE_GAP_MS` do three jobs at once: segmenting one gesture from the next, setting a
-floor on commit latency, and (as the minimum possible gap between two gesture ends) bounding
-`SWIPE_NAV_DEBOUNCE_MS` from above. Raising or lowering it touches all three, and
-`BrowserSwipeNavTest` reads it out of the script so the third one fails loudly.
+`boss.browser.swipe.phase` remains compatible: `id:active:beganAtEpochMs[:previousTerminatedAtEpochMs]`
+or `id:ended|cancelled:netX:verticalPath:nativeRejected:reversed`. The fifth terminal field is the
+native reducer's verdict, not the page's. Active publication occurs only at
+contact begin, not on every movement. `boss.browser.swipe.terminals` additionally retains the last
+32 terminal records, separated by semicolons, published before the next active contact. Companion
+fluck-browser#45 reconciles by contact ID both before handling a new wheel and in its watchdog.
+Reads are non-destructive across surfaces; missing/evicted evidence cancels. These deltas are native
+CoreGraphics point deltas, not a guarantee of CSS-pixel or Compose-unit equivalence. Physical
+trackpad calibration still needs to cover browser zoom, slow drags and the separately tuned home
+surface. `SwipeNavParityTest` runs shared sample fixtures through the native reducer and the actual
+page script, including the host-generated release statement; it also pins cancellation constants.
+
+One cross-process ordering limit remains: the cutoff rejects AWT events stamped at or before the
+previous native termination, but cannot identify an old OS event that AWT dispatch stamps only
+after the new contact begins. Arbitrarily delayed dispatch still needs real backlog testing
+before adding a custom FIFO between the CoreGraphics tap and JxBrowser's input callback.
 
 **Past the commit distance, vertical drift stops cancelling** (`reachedCommit`). Vertical is a path
 length and only ever grows, so every event after the crossing was one more chance to cancel a swipe
@@ -822,24 +844,8 @@ easing back or reversing can still cancel. Native swipe-back behaves the same wa
 
 **Two host-side windows, for two different things** (`BrowserSwipeNavBridge.kt`).
 `SWIPE_NAV_DEBOUNCE_MS` (32ms, any direction) catches a double-dispatch bug in the bridge.
-`SWIPE_NAV_REPEAT_MS` (400ms, same direction only) is the paused-drag guard: a slow drag that
-hesitates past `GESTURE_GAP_MS` with the fingers down is two gestures to the script and would
-navigate back twice. That guard cannot live in the page - the first commit navigates the tab and
-the script's state dies with the document. The cost is that two intentional same-direction swipes
-under 400ms apart become one; that is the deliberate trade, because a dropped swipe is retryable
-and an extra step back may not be, since the forward entry need not survive a redirect. A reversal
-is never held for the repeat window.
-
-**Momentum phase costs latency and nothing else.** A `CGEvent` tap on this hardware (measured
-2026-09-02) shows macOS emitting momentum-phase scroll for 180-870ms after the fingers lift,
-carrying 325-2500px of horizontal travel. Whether Chromium forwards those to the renderer as
-`wheel` events is NOT confirmed: if it does, each one re-arms the end-of-gesture timer and a flick
-commits at end-of-momentum instead of at release. It cannot change the ANSWER - a tail runs the
-flick's own direction, so it can neither reverse nor ease back, and `reachedCommit` is what closed
-the remaining path, a tail's `deltaY` tripping the vertical tiers. Synthetic phase-tagged events
-cannot settle the forwarding question - `CGEventPost` from another process never reaches the
-layered native browser surface, and does not even enter the session event stream - so it needs one
-real flick against a recording `wheel` listener.
+`SWIPE_NAV_REPEAT_MS` (400ms, same direction only) remains defense in depth against duplicate
+bridge delivery across a navigation. A reversal is held only for the shorter debounce window.
 
 **Off switch**: `Settings > Browser > Trackpad`, stored in `~/.boss/swipe-nav.json`, or
 `BOSS_BROWSER_SWIPE_NAV=false` (also `0` / `no` / `off`). The environment wins, and the Settings row
@@ -2077,3 +2083,79 @@ no second sandbox prompt. Explicit policies and session trust retain precedence.
 HIGH/CRITICAL names use the mutating default, while unknown names remain allowed
 by default. Risk reasons and sanitized arguments appear together in the existing
 approval dialog. #362 is closed pending extraction into a management plugin.
+
+**The bottom bar's "MCP: `<tool>`" status line is clickable into an activity log of the last 100
+calls this session.** Before this it was the only visibility into MCP activity at all - every
+call before the current one, and the policy/approval decision behind it, was reachable only by
+opening the rotated ledger file in a text editor. The dialog is a read-only view over
+`McpOperationLedger.recentOperations`, scoped to calls that actually reached the policy engine -
+`McpOperationLedger`'s own KDoc records that an unregistered, unpermitted or kill-switch-disabled
+tool call is refused before that, so this is not a view over every MCP invocation attempt.
+Retention is described as finite and best-effort (the active ledger file plus up to 5 rotated
+backups, and a write failure there is logged rather than retried), not a guarantee older calls
+are still on disk. Unsuccessful calls are broken down by `McpUnsuccessfulCategory` - denied,
+cancelled, withheld (approval queue overflow or a host disk fault that stopped the call from running) or failed - through an exhaustive `when` over `McpApprovalDisposition` rather
+than a `setOf`-based membership check, so a disposition the enum grows later is a compile error
+here rather than silently counted as a tool fault.
+
+This is host UI for now; #416 is where activity/history UI and its ownership are meant to move
+into a dynamic plugin. Should that move happen, the read surface it needs must be
+**host-implemented and permission-gated** (an `mcp.activity.read`-shaped permission, the way MCP
+tool calls already gate on `project.replace` and similar), never a member added to the ungated
+`PluginContext.applicationEventBus`/`projectSearchProvider` surface this file documents elsewhere
+- an ungated ledger read would hand any installed plugin every *other* plugin's tool names,
+sanitized arguments and error snippets, and this file's own sanitizer caveat ("bounded and best
+effort, not a guarantee for secrets under arbitrary keys") is acceptable for an operator-only host
+dialog and not for a cross-plugin observation channel. Until that move happens, keeping this host
+UI is also the stronger guarantee for a second reason: a governance viewer that can be disabled or
+uninstalled by the plugins it governs is weaker than one that ships with the host.
+
+The idle activity entry appears only while MCP tools are exposed (existing history remains reachable).
+The viewer uses the ledger instance's actual optional persistence path. Its tooltip follows the host
+heavyweight overlay route. Width and height follow the originating window, with a fixed-cap fallback
+while window metadata is not yet measured; Close stays outside the scrolling body.
+
+**The "Persisted MCP policies" bottom bar button also lets an operator set a rule
+*proactively*, for a registered tool without a saved rule.** It is present even with zero saved
+rules (labeled "Set MCP tool policies" then). Allow requires a second confirming tap
+and shows the tool's risk assessment first, the same way the approval dialog's own
+"Always Allow" does, since it is the same durable, tool-name-wide grant. The write goes
+through `McpPolicyEngine.setToolPolicyIfAbsent`, not the reactive approval path's
+`setToolPolicy` - the proactive contract is "add a rule only while this tool still has
+none of its own," and `expectedRevocation`/`providerId` (captured when the tool was
+offered as a candidate, via `mcpProactivePolicyCandidates` /
+`McpToolIdentity.expectedRevocation`) alone cannot enforce that: `revocationVersion`
+only moves on a revoke, so an intervening explicit ASK or ALLOW made through the
+reactive approval dialog for this same tool never trips it, and a `preserveDeny`-style
+guard would let the proactive write silently clobber that decision. `setToolPolicyIfAbsent`
+re-checks `toolName !in rules` under the same lock the write itself takes, atomically, so
+any rule present at write time - not only a DENY - refuses the write instead. The same
+lock also refuses provider DENY and unreadable-policy faults, preserving damaged files
+for manual recovery. Refused writes refresh candidates and require a fresh confirmation;
+storage failures get separate feedback. Stable DENY and damaged-file refusals are explained
+inside the dialog, including backup/recovery guidance. Confirmation is tied to the full candidate snapshot.
+These privileged writes remain beside host policy enforcement. #416 tracks the separate
+observation/plugin architecture; this PR does not expose a policy writer to plugins.
+
+The MCP tool policies dialog also groups currently registered, enabled tools by
+provider into sections. All allows the section, View selects tools declared
+read-only except names in the host mutating catalog and HIGH/CRITICAL risk tools, Edit selects the remaining
+tools, and Custom uses individual checkboxes. Applying a preset denies tools
+outside its selection; existing tool rules are replaced only after the operator
+confirms the displayed counts and scope. These are explicit tool-name rules,
+not provider trust: future tools are not automatically granted access.
+`McpPolicyEngine.setSectionPolicies` writes the reviewed section atomically,
+checks every prior rule and tool/provider revocation stamp, refuses provider DENY
+and unreadable policy files, and invalidates queued grants/session trust after a
+successful save. Keep these checks when changing section UI; sequential calls to
+`setToolPolicy` would permit partial application and stale overwrites. Individual
+reset controls remain available below the sections.
+
+The section/global confirmation UI uses the same default-risk evaluator as the
+engine. HIGH/CRITICAL grants and replacements of an existing DENY display each
+tool's risk and require Review followed by Confirm. Failed writes retain the
+staged choices and retry action; successful or stale writes refresh revocation
+snapshots. Current saved rules (including ASK/default) are visible in expanded
+rows, and the summary distinguishes rules being replaced from new denials.
+Global None is a distinct deny-all preset, not Custom; Edit is the label at both
+levels. Search by plugin display name also matches its saved tool rules.

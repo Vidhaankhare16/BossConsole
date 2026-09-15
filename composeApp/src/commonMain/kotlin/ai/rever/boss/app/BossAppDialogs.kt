@@ -70,6 +70,7 @@ import ai.rever.boss.run.RunConfigurationManager
 import ai.rever.boss.run.RunExecutionService
 import ai.rever.boss.search.SearchSources
 import ai.rever.boss.search.ToolSearchRecord
+import ai.rever.boss.search.rememberSpotlightFileIndexer
 import ai.rever.boss.services.auth.UserDataStorage
 import ai.rever.boss.services.bookmarks.BookmarkAPIAccess
 import ai.rever.boss.settings.MICROKERNEL_MODE_CONFIRMATION_MESSAGE
@@ -109,6 +110,7 @@ internal fun BossAppDialogs(state: BossAppState) {
     val splitViewState = state.splitViewState
     val windowProjectState = state.windowProjectState
     val selectedProject by windowProjectState.selectedProject.collectAsState()
+    val spotlightFileIndexer = rememberSpotlightFileIndexer(state.spotlightFileIndexes, selectedProject.path)
 
     // Keymap settings (used by ShortcutHelpDialog)
     val keymapSettings by KeymapSettingsManager.currentSettings.collectAsState()
@@ -440,7 +442,7 @@ internal fun BossAppDialogs(state: BossAppState) {
         )
     }
 
-    if (state.showGlobalSearchDialog) {
+    if (state.showGlobalSearchDialog && spotlightFileIndexer != null) {
         // Offer THIS window's tools to the search, for exactly as long as its dialog is open.
         //
         // Registered here rather than per window, because the window that matters is the one whose
@@ -473,6 +475,8 @@ internal fun BossAppDialogs(state: BossAppState) {
 
         GlobalSearchDialog(
             projectPath = selectedProject.path,
+            fileIndexer = spotlightFileIndexer,
+            onIndexProject = { state.spotlightFileIndexes.ensureIndexed(selectedProject.path) },
             workspaceManager = workspaceManager,
             windowId = windowId,
             onDismiss = {

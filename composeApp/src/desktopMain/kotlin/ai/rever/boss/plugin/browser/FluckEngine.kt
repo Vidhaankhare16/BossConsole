@@ -608,6 +608,10 @@ object FluckEngine {
         wedgeUnrecoverable = unrecoverable
     }
 
+    /** Whether the wedge detector has spent its recycle budget; see [reportWedgeUnrecoverable]. */
+    internal val isWedgeUnrecoverable: Boolean
+        get() = wedgeUnrecoverable
+
     val engine: Engine
         get() =
             synchronized(engineLock) {

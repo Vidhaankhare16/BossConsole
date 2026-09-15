@@ -41,7 +41,7 @@ object CliBootstrap {
      */
     fun isHeadlessCli(args: Array<String>): Boolean {
         val firstNonFlag = args.firstOrNull { !it.startsWith("-") }?.lowercase()
-        return firstNonFlag in setOf("status", "mcp", "completion") ||
+        return firstNonFlag in setOf("status", "doctor", "mcp", "completion") ||
             (args.isNotEmpty() && args.all { it in setOf("-h", "--help") })
     }
 
@@ -60,7 +60,7 @@ object CliBootstrap {
                 CliDispatchResult.Exit(RisaLlmTokenCommand.execute())
             }
 
-            // Headless CLI commands (status, mcp, completion, --help) target the running
+            // Headless CLI commands (status, doctor, mcp, completion, --help) target the running
             // instance or generate output headlessly.
             isHeadlessCli(args) -> {
                 configureHeadlessOutputEncoding()

@@ -140,7 +140,7 @@
     <ID>CyclomaticComplexMethod:EditorContentProviderImpl.kt$EditorContentProviderImpl$override fun detectLanguage(filePath: String): String</ID>
     <ID>CyclomaticComplexMethod:EmailAuthService.kt$EmailAuthService$suspend fun verifyMagicLinkToken( token: String, email: String? = null, type: String = "magiclink", ): Result&lt;Boolean&gt;</ID>
     <ID>CyclomaticComplexMethod:EmptyContentScreen.kt$@Composable private fun Card( icon: ImageVector, title: String, description: String, isSelected: Boolean, enabled: Boolean, onClick: () -&gt; Unit, modifier: Modifier = Modifier, )</ID>
-    <ID>CyclomaticComplexMethod:FileIndexer.kt$FileIndexer$private fun scanDirectory( dir: File, rootCanonicalPath: String, rootPathLength: Int, files: MutableList&lt;IndexedFile&gt;, depth: Int = 0, )</ID>
+    <ID>CyclomaticComplexMethod:FileIndexer.kt$FileIndexer$private suspend fun scanDirectory( dir: File, rootCanonicalPath: String, rootPathLength: Int, files: MutableList&lt;IndexedFile&gt;, depth: Int = 0, )</ID>
     <ID>CyclomaticComplexMethod:FileNameSanitizer.kt$FileNameSanitizer$fun sanitize( fileName: String, replacement: Char = '_', ): String</ID>
     <ID>CyclomaticComplexMethod:Fluck.kt$@Composable fun BrowserErrorView( error: Throwable, url: String, retryCount: Int = 0, maxRetries: Int = 3, onRetry: (() -&gt; Unit)? = null, onReset: (() -&gt; Unit)? = null, onResetBrowser: (() -&gt; Unit)? = null, onRetryEngine: (() -&gt; Unit)? = null, )</ID>
     <ID>CyclomaticComplexMethod:Fluck.kt$FluckTabComponent$@Composable override fun Content()</ID>
@@ -974,7 +974,7 @@
     <ID>NestedBlockDepth:DynamicPluginManager.kt$DynamicPluginManager$suspend fun installPlugin( jarPath: String, enabled: Boolean = true, ): Result&lt;DynamicPluginInfo&gt;</ID>
     <ID>NestedBlockDepth:DynamicPluginManager.kt$DynamicPluginManager$suspend fun loadPersistedPlugins(plugins: List&lt;PersistedPluginEntry&gt;): Map&lt;String, Result&lt;DynamicPluginInfo&gt;&gt;</ID>
     <ID>NestedBlockDepth:DynamicPluginManager.kt$DynamicPluginManager.Companion$private suspend fun hotSwapApiLayerOrchestration(pluginDir: java.io.File): Result&lt;Int&gt;</ID>
-    <ID>NestedBlockDepth:FileIndexer.kt$FileIndexer$private fun scanDirectory( dir: File, rootCanonicalPath: String, rootPathLength: Int, files: MutableList&lt;IndexedFile&gt;, depth: Int = 0, )</ID>
+    <ID>NestedBlockDepth:FileIndexer.kt$FileIndexer$private suspend fun scanDirectory( dir: File, rootCanonicalPath: String, rootPathLength: Int, files: MutableList&lt;IndexedFile&gt;, depth: Int = 0, )</ID>
     <ID>NestedBlockDepth:FluckEngine.kt$FluckEngine$private fun cleanupStaleLockFiles(profileDir: java.nio.file.Path): Boolean</ID>
     <ID>NestedBlockDepth:FluckEngine.kt$FluckEngine$private fun killStaleChromiumProcesses()</ID>
     <ID>NestedBlockDepth:FontManager.kt$FontManager$private fun discoverAndCategorizeFonts(): Map&lt;String, List&lt;String&gt;&gt;</ID>
@@ -1094,7 +1094,7 @@
     <ID>ReturnCount:CLISecurityValidator.kt$CLISecurityValidator$fun isValidOpenTargetPath(path: String): Boolean</ID>
     <ID>ReturnCount:CLISecurityValidator.kt$CLISecurityValidator$fun isValidPath(path: String): Boolean</ID>
     <ID>ReturnCount:CLISecurityValidator.kt$CLISecurityValidator$fun normalizeAndValidateUrl(url: String): String?</ID>
-    <ID>ReturnCount:ChromiumAutoDownloader.kt$ChromiumAutoDownloader$fun isChromiumInstalled(): Boolean</ID>
+    <ID>ReturnCount:ChromiumAutoDownloader.kt$ChromiumAutoDownloader$internal fun chromiumInstalledAt( dir: Path = getChromiumDir(), requiredVersion: String = effectiveVersion, isMac: Boolean = System.getProperty("os.name").lowercase().contains("mac"), repairAttempted: () -&gt; Boolean = ::repairAlreadyAttempted, recordRepair: () -&gt; Unit, ): Boolean</ID>
     <ID>ReturnCount:ChromiumAutoDownloader.kt$ChromiumAutoDownloader$internal fun promotePendingInstall( pending: File, target: File, backup: File, )</ID>
     <ID>ReturnCount:ChromiumReleaseSource.kt$ChromiumReleaseResolver.Companion$private fun comparePreRelease( a: List&lt;String&gt;, b: List&lt;String&gt;, ): Int</ID>
     <ID>ReturnCount:CrossDeviceAuthService.kt$CrossDeviceAuthService$suspend fun handleCrossDeviceAuthentication( exception: CrossDeviceAuthenticationRequired, onAuthenticationComplete: suspend (PasskeyAuthenticationResult) -&gt; Result&lt;Unit&gt;, ): Result&lt;Unit&gt;</ID>

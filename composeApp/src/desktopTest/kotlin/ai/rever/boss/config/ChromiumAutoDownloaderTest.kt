@@ -116,6 +116,33 @@ class ChromiumAutoDownloaderTest {
         assertFalse(backup.exists())
     }
 
+    @Test
+    fun `read-only cache inspection leaves the startup repair attempt available`() {
+        target.mkdirs()
+        File(target, "executable.name").writeText("BOSS")
+        File(target, "version.txt").writeText("9.2.0")
+        val plist = File(target, "BOSS.app/Contents/Info.plist")
+        plist.parentFile.mkdirs()
+        plist.writeText("<plist><dict><key>CFBundleURLTypes</key><array/></dict></plist>")
+        val marker = File(root, "boss-chromium.types-repair")
+
+        fun inspect(recordRepair: () -> Unit) =
+            ChromiumAutoDownloader.chromiumInstalledAt(
+                dir = target.toPath(),
+                requiredVersion = "9.2.0",
+                isMac = true,
+                repairAttempted = { marker.exists() },
+                recordRepair = recordRepair,
+            )
+
+        assertFalse(inspect {})
+        assertFalse(inspect {})
+        assertFalse(marker.exists(), "health inspection must not consume the repair budget")
+        assertFalse(inspect { marker.writeText("9.2.0") }, "startup must still schedule the repair")
+        assertTrue(marker.exists())
+        assertTrue(inspect { error("the one-shot repair must not repeat") })
+    }
+
     // ---- installFromCandidates: source fallback + checksum verification ----
 
     private fun candidate(

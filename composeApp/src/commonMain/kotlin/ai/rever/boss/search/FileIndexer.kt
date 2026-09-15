@@ -2,7 +2,10 @@ package ai.rever.boss.search
 
 import ai.rever.boss.utils.logging.BossLogger
 import ai.rever.boss.utils.logging.LogCategory
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -24,9 +27,12 @@ private val logger = BossLogger.forComponent("FileIndexer")
  * for fast searching. Excludes common non-essential directories like
  * build outputs, node_modules, and hidden files.
  *
- * Thread-safe: Uses a mutex to prevent concurrent indexing operations.
+ * Thread-safe: Uses a mutex to serialize indexing operations. Requests are queued rather than
+ * dropped, so callers that share an indexer must avoid submitting unbounded work.
  */
-class FileIndexer {
+class FileIndexer(
+    private val scan: (suspend (String) -> List<IndexedFile>)? = null,
+) {
     /** Mutex to ensure only one indexing operation runs at a time. */
     private val indexingMutex = Mutex()
 
@@ -82,7 +88,7 @@ class FileIndexer {
     /**
      * Index all files in the given project path.
      *
-     * Thread-safe: Uses mutex to prevent concurrent indexing operations.
+     * Thread-safe: Serializes indexing requests with a mutex; queued requests are not dropped.
      *
      * @param projectPath The root directory to index
      * @param forceReindex If true, re-index even if already indexed
@@ -91,47 +97,45 @@ class FileIndexer {
         projectPath: String,
         forceReindex: Boolean = false,
     ) {
-        // Try to acquire lock without blocking - if already indexing, skip
-        if (!indexingMutex.tryLock()) {
-            logger.debug(LogCategory.FILE, "Index already in progress, skipping")
-            return
-        }
-
-        try {
-            // Check if already indexed (inside lock to prevent race)
-            if (!forceReindex && _indexedPath.value == projectPath && _indexedFiles.value.isNotEmpty()) {
-                logger.debug(LogCategory.FILE, "Project already indexed", mapOf("path" to projectPath))
-                return
-            }
-
-            _isIndexing.value = true
-
-            logger.info(LogCategory.FILE, "Starting file indexing", mapOf("path" to projectPath))
-            val startTime = System.currentTimeMillis()
-
-            val files =
-                withContext(Dispatchers.IO) {
-                    scanProjectFiles(projectPath)
+        indexingMutex.withLock {
+            try {
+                // Check if already indexed (inside lock to prevent race)
+                if (!forceReindex && _indexedPath.value == projectPath && _indexedFiles.value.isNotEmpty()) {
+                    logger.debug(LogCategory.FILE, "Project already indexed", mapOf("path" to projectPath))
+                    return@withLock
                 }
 
-            _indexedFiles.value = files
-            _indexedPath.value = projectPath
+                _isIndexing.value = true
 
-            val elapsed = System.currentTimeMillis() - startTime
-            logger.info(
-                LogCategory.FILE,
-                "File indexing complete",
-                mapOf(
-                    "path" to projectPath,
-                    "fileCount" to files.size,
-                    "elapsedMs" to elapsed,
-                ),
-            )
-        } catch (e: Exception) {
-            logger.error(LogCategory.FILE, "Error indexing project", error = e)
-        } finally {
-            _isIndexing.value = false
-            indexingMutex.unlock()
+                logger.info(LogCategory.FILE, "Starting file indexing", mapOf("path" to projectPath))
+                val startTime = System.currentTimeMillis()
+
+                val files =
+                    scan?.invoke(projectPath)
+                        ?: withContext(Dispatchers.IO) {
+                            scanProjectFiles(projectPath)
+                        }
+
+                _indexedFiles.value = files
+                _indexedPath.value = projectPath
+
+                val elapsed = System.currentTimeMillis() - startTime
+                logger.info(
+                    LogCategory.FILE,
+                    "File indexing complete",
+                    mapOf(
+                        "path" to projectPath,
+                        "fileCount" to files.size,
+                        "elapsedMs" to elapsed,
+                    ),
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                logger.error(LogCategory.FILE, "Error indexing project", error = e)
+            } finally {
+                _isIndexing.value = false
+            }
         }
     }
 
@@ -147,7 +151,8 @@ class FileIndexer {
     /**
      * Scan all files in the project directory recursively.
      */
-    private fun scanProjectFiles(projectPath: String): List<IndexedFile> {
+    private suspend fun scanProjectFiles(projectPath: String): List<IndexedFile> {
+        currentCoroutineContext().ensureActive()
         val rootDir = File(projectPath)
         if (!rootDir.exists() || !rootDir.isDirectory) {
             logger.warn(LogCategory.FILE, "Invalid project path", mapOf("path" to projectPath))
@@ -170,19 +175,21 @@ class FileIndexer {
      * Security: Validates that all indexed files remain within the project root
      * to prevent path traversal via symlinks.
      */
-    private fun scanDirectory(
+    private suspend fun scanDirectory(
         dir: File,
         rootCanonicalPath: String,
         rootPathLength: Int,
         files: MutableList<IndexedFile>,
         depth: Int = 0,
     ) {
+        currentCoroutineContext().ensureActive()
         // Limit depth to prevent extremely deep traversal
         if (depth > maxDepth) return
 
         val children = dir.listFiles() ?: return
 
         for (child in children) {
+            currentCoroutineContext().ensureActive()
             val name = child.name
 
             // Skip hidden files and directories

@@ -29,6 +29,9 @@ class McpOperationLedger(
     private val maxBackupIndex: Int = 5,
     private val ringBufferCapacity: Int = 100,
 ) {
+    /** The actual optional persistence destination, for operator-facing inspection. */
+    val persistencePath: String? get() = ledgerFile?.absolutePath
+
     private val logger = BossLogger.forComponent("McpOperationLedger")
     private val writeLock = Any()
     private val json = Json { ignoreUnknownKeys = true }

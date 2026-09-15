@@ -227,6 +227,9 @@ fun main(args: Array<String>) {
     ChromiumFlagsSettingsManager.applyToSystemProperties()
     ai.rever.boss.config.SwipeNavSettingsManager
         .publish()
+    // Start release detection before the browser plugin's home surface can receive gestures.
+    ai.rever.boss.plugin.browser.MacOSScrollGesturePhases
+        .ensureStarted()
     ai.rever.boss.config.AutoPipSettingsManager
         .publish()
 

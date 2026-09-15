@@ -10,11 +10,13 @@ import ai.rever.boss.utils.logging.LogCategory
 import ai.rever.boss.utils.logging.LogSanitizer
 import ai.rever.boss.window.WindowGitState
 import ai.rever.boss.window.WindowGitStateRegistry
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -22,7 +24,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
 import java.io.BufferedReader
 import java.io.File
 import java.io.IOException
@@ -30,8 +31,16 @@ import java.io.InputStreamReader
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.coroutines.AbstractCoroutineContextElement
+import kotlin.coroutines.CoroutineContext
 import ai.rever.boss.plugin.git.GitOperationResult.Error as GitError
 import ai.rever.boss.plugin.git.GitOperationResult.Success as GitSuccess
+
+private class GitCloneTimeoutContext(
+    val timeoutMillis: Long,
+) : AbstractCoroutineContextElement(GitCloneTimeoutContext) {
+    companion object Key : CoroutineContext.Key<GitCloneTimeoutContext>
+}
 
 /**
  * Desktop implementation of GitService using git CLI.
@@ -2224,6 +2233,20 @@ actual object GitService {
      * @param onProgress Callback for progress updates
      * @return GitOperationResult indicating success or failure
      */
+    internal suspend fun cloneRepositoryWithTimeout(
+        repositoryUrl: String,
+        targetDirectory: String,
+        onProgress: (String) -> Unit,
+        timeoutMillis: Long,
+    ): GitOperationResult =
+        withContext(GitCloneTimeoutContext(timeoutMillis)) {
+            cloneRepository(
+                repositoryUrl = repositoryUrl,
+                targetDirectory = targetDirectory,
+                onProgress = onProgress,
+            )
+        }
+
     actual suspend fun cloneRepository(
         repositoryUrl: String,
         targetDirectory: String,
@@ -2239,6 +2262,9 @@ actual object GitService {
                 ),
             )
 
+            val effectiveTimeout =
+                currentCoroutineContext()[GitCloneTimeoutContext]?.timeoutMillis
+                    ?: GIT_CLONE_TIMEOUT_MILLIS
             try {
                 // Check if git is available
                 if (!checkGitAvailable()) {
@@ -2277,124 +2303,139 @@ actual object GitService {
                     return@withContext GitError(error)
                 }
 
-                // Execute git clone with progress, wrapped in timeout (10 minutes for large repos)
-                withTimeout(600_000L) {
-                    // 10 minutes timeout
-                    onProgress("Initializing clone...")
+                // Execute git clone with progress and a cancellable 10-minute timeout
+                runCatching { onProgress("Initializing clone...") }
 
-                    val process =
-                        ProcessBuilder(
-                            "git",
-                            "clone",
-                            "--progress",
-                            repositoryUrl,
-                            targetDirectory,
-                        ).apply {
-                            // Inherit parent process environment for SSH/git credentials
-                            environment().putAll(System.getenv())
-                        }.redirectErrorStream(true) // Merge stderr into stdout for progress
-                            .start()
+                val process =
+                    ProcessBuilder(
+                        "git",
+                        "clone",
+                        "--progress",
+                        repositoryUrl,
+                        targetDirectory,
+                    ).apply {
+                        // Inherit parent process environment for SSH/git credentials
+                        environment().putAll(System.getenv())
+                    }.redirectErrorStream(true) // Merge stderr into stdout for progress
+                        .start()
 
-                    try {
-                        // Read progress output
-                        BufferedReader(InputStreamReader(process.inputStream)).use { reader ->
-                            var line: String?
-                            while (reader.readLine().also { line = it } != null) {
-                                line?.let { progressLine ->
-                                    // Git progress comes on stderr, but we redirected it to stdout
-                                    // Filter and send meaningful progress updates
-                                    when {
-                                        progressLine.contains("Cloning into") -> {
-                                            onProgress("Cloning repository...")
-                                        }
+                val exitCode =
+                    runCloneProcess(
+                        process = process,
+                        timeoutMillis =
+                        effectiveTimeout,
+                        onOutputLine = { progressLine ->
+                            // Git progress comes on stderr, but we redirected it to stdout
+                            // Filter and send meaningful progress updates
+                            when {
+                                progressLine.contains("Cloning into") -> {
+                                    onProgress("Cloning repository...")
+                                }
 
-                                        progressLine.contains("remote: Counting objects") -> {
-                                            onProgress("Receiving objects...")
-                                        }
+                                progressLine.contains("remote: Counting objects") -> {
+                                    onProgress("Receiving objects...")
+                                }
 
-                                        progressLine.contains("Receiving objects") -> {
-                                            // Extract percentage if available
-                                            val percentMatch = Regex("(\\d+)%").find(progressLine)
-                                            if (percentMatch != null) {
-                                                onProgress("Receiving objects: ${percentMatch.value}")
-                                            } else {
-                                                onProgress("Receiving objects...")
-                                            }
-                                        }
-
-                                        progressLine.contains("Resolving deltas") -> {
-                                            val percentMatch = Regex("(\\d+)%").find(progressLine)
-                                            if (percentMatch != null) {
-                                                onProgress("Resolving deltas: ${percentMatch.value}")
-                                            } else {
-                                                onProgress("Resolving deltas...")
-                                            }
-                                        }
-
-                                        progressLine.contains("Checking out files") -> {
-                                            onProgress("Checking out files...")
-                                        }
+                                progressLine.contains("Receiving objects") -> {
+                                    val percentMatch = Regex("(\\d+)%").find(progressLine)
+                                    if (percentMatch != null) {
+                                        onProgress("Receiving objects: ${percentMatch.value}")
+                                    } else {
+                                        onProgress("Receiving objects...")
                                     }
-                                    logger.debug(LogCategory.GENERAL, "Clone progress: $progressLine")
+                                }
+
+                                progressLine.contains("Resolving deltas") -> {
+                                    val percentMatch = Regex("(\\d+)%").find(progressLine)
+                                    if (percentMatch != null) {
+                                        onProgress("Resolving deltas: ${percentMatch.value}")
+                                    } else {
+                                        onProgress("Resolving deltas...")
+                                    }
+                                }
+
+                                progressLine.contains("Checking out files") -> {
+                                    onProgress("Checking out files...")
                                 }
                             }
-                        }
-
-                        val exitCode = process.waitFor()
-
-                        if (exitCode == 0) {
-                            onProgress("Clone completed successfully")
-                            logger.info(
-                                LogCategory.GENERAL,
-                                "Repository cloned successfully",
-                                mapOf("target" to targetDirectory),
-                            )
-                            GitSuccess()
-                        } else {
-                            val errorMessage =
-                                when {
-                                    repositoryUrl.contains("@") && exitCode == 128 -> {
-                                        "Authentication failed. Please configure your SSH keys or git credentials."
-                                    }
-
-                                    exitCode == 128 -> {
-                                        "Repository not found or access denied. Please check the URL and your permissions."
-                                    }
-
-                                    exitCode == 1 -> {
-                                        "Network error. Please check your internet connection."
-                                    }
-
-                                    else -> {
-                                        "Clone failed with exit code $exitCode. Please check the repository URL and try again."
-                                    }
+                            logger.debug(LogCategory.GENERAL, "Clone progress: $progressLine")
+                        },
+                        onCancellation = {
+                            val deletionResult =
+                                runCatching {
+                                    targetDir.deleteRecursively()
                                 }
-                            logger.error(
-                                LogCategory.GENERAL,
-                                "Clone failed",
-                                mapOf("exitCode" to exitCode, "message" to errorMessage),
-                            )
-                            GitError(errorMessage)
+
+                            deletionResult.exceptionOrNull()?.let { cleanupError ->
+                                logger.warn(
+                                    LogCategory.GENERAL,
+                                    "Failed to clean up after clone abort",
+                                    error = cleanupError,
+                                )
+                            }
+
+                            if (deletionResult.getOrNull() == false && targetDir.exists()) {
+                                logger.warn(
+                                    LogCategory.GENERAL,
+                                    "Failed to remove partial clone directory: ${targetDir.absolutePath}",
+                                )
+                            }
+                        },
+                        outputLifecycle =
+                            CloneOutputLifecycle(
+                                onFailure = { outputError ->
+                                    logger.warn(
+                                        LogCategory.GENERAL,
+                                        "Git clone completed before its progress reader settled",
+                                        error = outputError,
+                                    )
+                                },
+                            ),
+                    )
+
+                if (exitCode == 0) {
+                    runCatching { onProgress("Clone completed successfully") }
+                    logger.info(
+                        LogCategory.GENERAL,
+                        "Repository cloned successfully",
+                        mapOf("target" to targetDirectory),
+                    )
+                    GitSuccess()
+                } else {
+                    val errorMessage =
+                        when {
+                            repositoryUrl.contains("@") && exitCode == 128 -> {
+                                "Authentication failed. Please configure your SSH keys or git credentials."
+                            }
+
+                            exitCode == 128 -> {
+                                "Repository not found or access denied. Please check the URL and your permissions."
+                            }
+
+                            exitCode == 1 -> {
+                                "Network error. Please check your internet connection."
+                            }
+
+                            else -> {
+                                "Clone failed with exit code $exitCode. Please check the repository URL and try again."
+                            }
                         }
-                    } finally {
-                        // Ensure process is destroyed if still running
-                        if (process.isAlive) {
-                            process.destroyForcibly()
-                        }
-                    }
+                    logger.error(
+                        LogCategory.GENERAL,
+                        "Clone failed",
+                        mapOf("exitCode" to exitCode, "message" to errorMessage),
+                    )
+                    GitError(errorMessage)
                 }
             } catch (e: TimeoutCancellationException) {
                 val errorMessage =
-                    "Clone operation timed out after 10 minutes. " +
+                    "Clone operation timed out after ${effectiveTimeout / 1000} seconds. " +
                         "The repository may be too large or the connection too slow. Try cloning from terminal instead."
                 logger.error(LogCategory.GENERAL, errorMessage, error = e)
-                // Clean up partial clone
-                try {
-                    File(targetDirectory).deleteRecursively()
-                } catch (cleanupError: Exception) {
-                    logger.warn(LogCategory.GENERAL, "Failed to clean up after timeout", error = cleanupError)
-                }
+                // Clone lifecycle has already stopped the process before removing its partial destination.
                 GitError(errorMessage)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: IOException) {
                 val errorMessage =
                     when {
@@ -2425,16 +2466,6 @@ actual object GitService {
                     targetDirectory,
                 ).parentFile?.absolutePath}'."
                 logger.error(LogCategory.GENERAL, errorMessage, error = e)
-                GitError(errorMessage)
-            } catch (e: InterruptedException) {
-                val errorMessage = "Clone operation was interrupted. Please try again."
-                logger.error(LogCategory.GENERAL, errorMessage, error = e)
-                // Clean up partial clone
-                try {
-                    File(targetDirectory).deleteRecursively()
-                } catch (cleanupError: Exception) {
-                    logger.warn(LogCategory.GENERAL, "Failed to clean up after interruption", error = cleanupError)
-                }
                 GitError(errorMessage)
             } catch (e: Exception) {
                 val errorMessage = "Unexpected error during clone: ${e.message ?: e.javaClass.simpleName}. Please check logs for details."

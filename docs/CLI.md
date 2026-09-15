@@ -24,6 +24,7 @@ You can install or update the CLI symlinks inside BossConsole via **Toolbox → 
 | `boss workspace <file>` | Loads a workspace configuration | `boss workspace ./workspace.json` |
 | `boss terminal` | Opens a new integrated BossTerm pane | `boss terminal` |
 | `boss status` | Checks running BossConsole health and status | `boss status --json` |
+| `boss doctor` | Reports health problems with suggested next steps (exit `2` when degraded) | `boss doctor --json` |
 | `boss mcp <action>` | Discovers and invokes MCP tools | `boss mcp list` |
 | `boss completion <shell>` | Generates shell tab-completion scripts | `boss completion bash > ~/.boss-complete.sh` |
 
@@ -62,6 +63,47 @@ boss status --json
   }
 }
 ```
+
+#### Health: the `health` field and `boss doctor`
+
+`boss status --json` also carries a `health` object. It reports problems BOSS already tracks but previously showed only inside a window: plugins the sandbox watchdog stopped after repeated failures, plugins that need attention in **Help > Plugin Health & Recovery**, a browser engine that is not installed, could not start, or has stopped responding, and MCP kill-switch or policy faults that withhold tools. The field is additive and `boss status` keeps its existing exit codes; its human output gains a single `Health:` line.
+
+`boss doctor` prints the same report with a suggested next step for each problem, and exits with code `2` while any problem is present. Both commands are read-only: they never change plugin, browser or MCP state. Both also say in words when coverage was incomplete: `Not checked:` for an area nothing could be read from, and `Partially checked:` for one where some sources answered and others failed.
+
+```bash
+# Human-readable report: exit 0 when healthy, 2 when degraded, 1 when BOSS is not running
+boss doctor
+
+# The health object as JSON, with the same exit codes
+boss doctor --json
+```
+
+**Health Object Example**:
+```json
+{
+  "degraded": true,
+  "findings": [
+    {
+      "area": "plugins",
+      "severity": "warning",
+      "code": "plugin_stopped_after_failures",
+      "summary": "Plugin 'Terminal Tab' was stopped after repeated failures.",
+      "subject": "ai.rever.boss.plugin.dynamic.terminaltab",
+      "remedy": "Reload it from Help > Plugin Health & Recovery in the affected window, or restart BOSS."
+    }
+  ],
+  "unchecked": [],
+  "partial": []
+}
+```
+
+- `area` is `plugins`, `browser` or `mcp`.
+- `severity` is `critical` when something that should work is broken and a whole capability is gone (a browser engine that failed, or every MCP tool), and `warning` for something narrower: one plugin, one setting that was not saved, or a browser engine that has not been downloaded yet. Critical findings are listed first.
+- `code` is stable for scripts to match on: `plugin_stopped_after_failures`, `plugin_needs_attention`, `browser_engine_not_installed`, `browser_engine_unavailable`, `browser_engine_unresponsive`, `mcp_tools_withheld`, `mcp_tool_setting_not_saved`, `mcp_policy_unreadable`, `mcp_policy_not_saved`. `summary` is for people and may be reworded.
+- `subject` (a plugin id or tool name) and `remedy` are omitted when they do not apply.
+- `unchecked` lists areas whose state could not be read at all, including `plugins` while no BOSS window is open. They are neither healthy nor degraded and do not affect the exit code.
+- `partial` lists areas that were read from several sources where some of those sources failed. Today only `plugins` can appear, because it has one source per open window: if one window's source fails, the other windows' findings are still reported and `plugins` is listed here instead of being dropped into `unchecked`. Findings in a partial area are real, but the area is not fully covered, so an empty result there is not a clean bill of health. Like `unchecked`, it does not affect the exit code. An area is never in both `unchecked` and `partial`. The field is additive: a BOSS that predates it simply omits it, and both `boss status` and `boss doctor` treat an absent `partial` as empty.
+- Plugin health covers every open window that could be read. A plugin you disabled, or one your role cannot access, is not reported as a problem.
 
 ---
 
@@ -160,6 +202,7 @@ The CLI adheres to strict UNIX process exit codes and standard stream separation
 - **Exit Code `0`**: Operation succeeded. `stdout` contains the tool output or JSON response.
 - **Exit Code `1`**: Tool execution failed (`isError == true`), invalid tool arguments, or desktop app offline. Clikt usage errors also use exit code `1`. The error description is written strictly to `stderr`, leaving `stdout` clean so shell pipelines do not ingest corrupted data.
 - **Output encoding**: Piped or redirected output, including every `--json` response and `boss mcp invoke` tool output, is UTF-8 on every platform; a Windows console keeps its own code page. Windows PowerShell 5.1 decodes a native command's output with `[Console]::OutputEncoding`, so set it to UTF-8 (`[Console]::OutputEncoding = [System.Text.Encoding]::UTF8`) before capturing output that contains non-ASCII text.
+- **Exit Code `2`**: `boss doctor` only. BOSS is running but reported at least one health finding. `stdout` still contains the report, so a script can branch on the code and read the details. `boss status` never uses this code.
 
 ### Offline Fail-Fast
 If BossConsole is not running, commands fail immediately without hanging:
