@@ -151,7 +151,13 @@ class PluginProcessMetricsTest {
                 if ("-M" in command) macPsM else "10881 102736\n10882  78544\n"
             }
 
-        assertEquals(listOf("/bin/ps", "/bin/ps"), commands.map { it.first() })
+        assertEquals(
+            listOf(
+                listOf("/bin/ps", "-o", "pid=,rss=", "-p", "10881,10882"),
+                listOf("/bin/ps", "-M", "-p", "10881,10882"),
+            ),
+            commands,
+        )
         assertEquals(
             mapOf(
                 10881L to OsProcessMetrics(rssBytes = 102_736L * 1024, threadCount = 4),

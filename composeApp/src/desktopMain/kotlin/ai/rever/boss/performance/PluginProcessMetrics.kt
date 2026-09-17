@@ -66,32 +66,43 @@ internal object BoundedCommand {
      * thread, about 60 bytes each, so its size grows with every plugin's thread count rather than
      * with the pid list, and past the pipe buffer the child would block writing until the timeout.
      *
+     * The wait for the child is bounded by [timeoutMillis]; once the child has exited, the drain is
+     * given a second bounded wait of the same length, so the caller can be held for up to twice
+     * [timeoutMillis] in the worst case.
+     *
      * The exit status is ignored, as before: `ps -p` exits non-zero when one pid has exited but still
-     * prints the others.
+     * prints the others. An interrupt while waiting is reported as a failure with the interrupt
+     * flag restored, and the child is destroyed, as on the timeout path.
      */
     fun run(
         command: List<String>,
         timeoutMillis: Long,
-    ): Result<String> =
-        runCatching {
-            val process = ProcessBuilder(command).redirectErrorStream(true).start()
-            try {
-                val drain = FutureTask { process.inputStream.bufferedReader().use { it.readText() } }
-                Thread(drain, "plugin-metrics-drain").apply { isDaemon = true }.start()
-                if (!process.waitFor(timeoutMillis, TimeUnit.MILLISECONDS)) {
-                    process.destroyForcibly()
-                    error("${command.first()} did not finish within $timeoutMillis ms")
+    ): Result<String> {
+        val result =
+            runCatching {
+                val process = ProcessBuilder(command).redirectErrorStream(true).start()
+                try {
+                    val drain = FutureTask { process.inputStream.bufferedReader().use { it.readText() } }
+                    Thread(drain, "plugin-metrics-drain").apply { isDaemon = true }.start()
+                    if (!process.waitFor(timeoutMillis, TimeUnit.MILLISECONDS)) {
+                        process.destroyForcibly()
+                        error("${command.first()} did not finish within $timeoutMillis ms")
+                    }
+                    // The child has exited, so its end of the pipe is closed and the drain reaches EOF.
+                    drain.get(timeoutMillis, TimeUnit.MILLISECONDS)
+                } finally {
+                    // An interrupted wait or a failed reader start never destroys the child, and
+                    // destroyForcibly does not close the streams, so without both lines a
+                    // non-timeout failure leaves the child running and the streams to the finalizer.
+                    if (process.isAlive) process.destroyForcibly()
+                    process.inputStream.close()
+                    process.errorStream.close()
+                    process.outputStream.close()
                 }
-                // The child has exited, so its end of the pipe is closed and the drain reaches EOF.
-                drain.get(timeoutMillis, TimeUnit.MILLISECONDS)
-            } finally {
-                // destroyForcibly does not close the streams, so without this the timeout path
-                // leaves them to the finalizer.
-                process.inputStream.close()
-                process.errorStream.close()
-                process.outputStream.close()
             }
-        }
+        if (result.exceptionOrNull() is InterruptedException) Thread.currentThread().interrupt()
+        return result
+    }
 }
 
 /**
