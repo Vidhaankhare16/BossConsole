@@ -446,14 +446,22 @@ class WorkspaceMcpToolProviderTest {
     fun `open_workspace rejects dangerous project or workspace paths`() =
         runBlocking {
             val core = createTestCore()
+            // An absolute path of this machine's own shape, so the metacharacter and traversal
+            // rules below are what refuses these calls. A POSIX literal like "/tmp;rm -rf /" is
+            // not absolute on Windows, so `checkProjectPath`'s earlier absolute-path guard would
+            // refuse it there and this test would pass without reaching the gate it is about.
+            val project = Files.createTempDirectory("ws-path-dangerous").toFile()
+            tempDirs.add(project)
+            val absolute = project.absolutePath.replace('\\', '/')
+
             // projectPath is a destination (a terminal cwd), so it gets the strict gate:
             // shell metacharacters and traversal are both refused.
-            val badProjectArgs = """{"workspaceId":"test-ws","projectPath":"/tmp;rm -rf /"}"""
+            val badProjectArgs = """{"workspaceId":"test-ws","projectPath":"$absolute;rm -rf /"}"""
             val projectResult = core.invoke("open_workspace", badProjectArgs)
             assertTrue(projectResult.isError)
             assertTrue(projectResult.text.contains("Refusing to open"), projectResult.text)
 
-            val badProjectTraversal = """{"workspaceId":"test-ws","projectPath":"/tmp/../etc"}"""
+            val badProjectTraversal = """{"workspaceId":"test-ws","projectPath":"$absolute/../etc"}"""
             val traversalResult = core.invoke("open_workspace", badProjectTraversal)
             assertTrue(traversalResult.isError)
             assertTrue(traversalResult.text.contains("Refusing to open"), traversalResult.text)
