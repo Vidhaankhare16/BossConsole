@@ -8,6 +8,7 @@ import ai.rever.boss.components.events.FileEventBus
 import ai.rever.boss.components.events.GitTerminalEventBus
 import ai.rever.boss.components.events.NavigationTargetBus
 import ai.rever.boss.components.events.PanelEventBus
+import ai.rever.boss.components.events.PluginActionEventBus
 import ai.rever.boss.components.events.RunEventBus
 import ai.rever.boss.components.events.RunnerTerminalEventBus
 import ai.rever.boss.components.events.TabEventBus
@@ -309,6 +310,30 @@ internal fun BossAppEventBusEffects(state: BossAppState) {
 
         // Note: We DON'T call markReady() here - that happens AFTER Last Session loads
         // just like URL handler, to prevent terminals from being destroyed by clearAllPanels()
+    }
+
+    // A plugin action link that arrived from outside the operator's own `boss`
+    // invocation. Nothing has been dispatched: the prompt in BossAppDialogs is
+    // what reaches the plugin's handler, and only if the operator agrees.
+    LaunchedEffect(windowId) {
+        PluginActionEventBus.confirmEvents
+            .filter { event -> event.sourceWindowId == windowId }
+            .onEach { event ->
+                val request = PendingPluginAction(event.handlerId, event.action, event.params)
+                if (state.pluginActionApprovals.enqueue(request)) {
+                    logger.info(
+                        LogCategory.SYSTEM,
+                        "Holding an externally requested plugin action for confirmation",
+                        mapOf("windowId" to windowId, "handlerId" to event.handlerId, "action" to event.action),
+                    )
+                } else {
+                    logger.warn(
+                        LogCategory.SYSTEM,
+                        "External plugin action refused: approval queue full",
+                        mapOf("windowId" to windowId, "handlerId" to event.handlerId),
+                    )
+                }
+            }.launchIn(this)
     }
 
     // A delivered security prompt belongs to exactly one window.
