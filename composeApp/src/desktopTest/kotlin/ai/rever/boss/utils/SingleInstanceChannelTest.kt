@@ -258,14 +258,15 @@ class SingleInstanceChannelTest {
                 },
             )
         try {
-            assertTrue(SingleInstanceManager.sendToExistingInstance("boss://plugin?id=$handlerId&action=ping"))
-            assertFalse(SingleInstanceManager.sendToExistingInstance("boss://plugin?id=$handlerId&action=unknown"))
+            assertTrue(sendAsOperator("boss://plugin?id=$handlerId&action=ping"))
+            assertFalse(sendAsOperator("boss://plugin?id=$handlerId&action=unknown"))
+            assertFalse(SingleInstanceManager.sendToExistingInstance("boss://plugin?id=$handlerId&action=ping"))
         } finally {
             ai.rever.boss.components.plugin.registries.DeepLinkActionRegistryImpl
                 .unregister(handlerId)
         }
 
-        assertFalse(SingleInstanceManager.sendToExistingInstance("boss://plugin?id=no-such-handler&action=ping"))
+        assertFalse(sendAsOperator("boss://plugin?id=no-such-handler&action=ping"))
 
         // A plugin link that just opens a panel (no action) is unaffected: still
         // reported as acknowledged, exactly like before this change.
@@ -308,7 +309,7 @@ class SingleInstanceChannelTest {
         }
         try {
             assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
-            assertFalse(SingleInstanceManager.sendToExistingInstance("boss://plugin?id=$handlerId&action=run"))
+            assertFalse(sendAsOperator("boss://plugin?id=$handlerId&action=run"))
         } finally {
             release.countDown()
             // Drain the queued dispatch before inspecting its observable side effect.
@@ -809,3 +810,11 @@ class SingleInstanceChannelTest {
 
     private fun hasPosixPermissions(path: Path) = path.fileSystem.supportedFileAttributeViews().contains("posix")
 }
+
+private val OPERATOR = DeepLinkOrigin.OPERATOR_CLI
+
+/**
+ * A forwarded link the operator passed to `boss` themselves, which dispatches
+ * unattended. Without this an action link is EXTERNAL and is held or refused.
+ */
+private fun sendAsOperator(url: String) = SingleInstanceManager.sendToExistingInstance(url, OPERATOR)

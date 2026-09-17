@@ -2,6 +2,7 @@ package ai.rever.boss.utils
 
 import ai.rever.boss.cli.CLISecurityValidator
 import ai.rever.boss.components.events.PanelEventBus
+import ai.rever.boss.components.events.PluginActionEventBus
 import ai.rever.boss.components.plugin.PanelIds
 import ai.rever.boss.components.plugin.panels.left_top.ProjectState
 import ai.rever.boss.plugin.api.PanelId
@@ -418,7 +419,7 @@ actual object DeepLinkHandler {
             DeepLinkHost.FILE -> handleFileLink(uri)
             DeepLinkHost.TERMINAL -> handleTerminalLink(uri, origin)
             DeepLinkHost.FOLDER -> handleFolderLink(uri, targetWindowId)
-            DeepLinkHost.PLUGIN -> return handlePluginLink(uri, targetWindowId)
+            DeepLinkHost.PLUGIN -> return handlePluginLink(uri, targetWindowId, origin)
             DeepLinkHost.SPLIT -> handleSplitLink(uri, targetWindowId)
         }
         return null
@@ -570,18 +571,27 @@ actual object DeepLinkHandler {
      * [targetWindowId] is already resolved by [processDeepLink]; the panel event
      * and the action dispatch are emitted on the UI thread.
      *
-     * @return for an action link, a [Deferred] resolving to
+     * [origin] decides whether an action dispatches at all. The `boss://` scheme
+     * is registered with the OS, so an action link is not evidence the operator
+     * asked for anything; see [pluginActionDisposition].
+     *
+     * @return for an action link the operator's own invocation delivered, a
+     *   [Deferred] resolving to
      *   [ai.rever.boss.components.plugin.registries.DeepLinkActionRegistryImpl.dispatch]'s
      *   own verdict (false for an unregistered handler id, a handler that
      *   declines the action, or one that throws — that function never lets an
-     *   exception escape). Null for a panel-open link, which stays fire-and-forget. An action
-     *   without a usable id is rejected with a false verdict.
+     *   exception escape). Null for a panel-open link, which stays fire-and-forget,
+     *   and null for an action held for confirmation: nothing has been dispatched,
+     *   so there is no verdict yet, which is the same "queued" answer
+     *   `boss://terminal` already gives a command it holds. An action without a
+     *   usable id, or one refused outright, is rejected with a false verdict.
      */
     private fun handlePluginLink(
         uri: String,
         targetWindowId: String?,
+        origin: DeepLinkOrigin,
     ): Deferred<Boolean>? {
-        logger.debug(LogCategory.UI, "Handling plugin link")
+        logger.debug(LogCategory.UI, "Handling plugin link", mapOf("origin" to origin.name))
 
         val params = parseQueryParams(uri)
         val panelIdStr = params["id"]?.urlDecode()
@@ -594,30 +604,94 @@ actual object DeepLinkHandler {
         // Action links dispatch to the plugin's DeepLinkActionHandler and do
         // NOT fall through to opening a panel — the two are distinct verbs
         // sharing the `plugin` scheme. Unhandled actions just log (registry
-        // warns); external input, so handlers own validation.
+        // warns); handlers still own validation of the values they accept.
         val action = params["action"]?.urlDecode()
         return if (action != null) {
-            dispatchPluginAction(panelIdStr, action, params)
+            dispatchPluginAction(panelIdStr, action, params, origin, targetWindowId)
         } else {
             openPluginPanel(panelIdStr, targetWindowId)
             null
         }
     }
 
-    /** Runs a `boss://plugin?id=…&action=…` link's action and hands back its real outcome. */
+    /**
+     * Runs a `boss://plugin?id=…&action=…` link's action, holds it for the
+     * operator, or refuses it — see [pluginActionDisposition].
+     *
+     * @return the handler's real outcome for a dispatched action, false for a
+     *   refused one, and null for one held for confirmation (nothing ran, so
+     *   there is no outcome to report yet).
+     */
     private fun dispatchPluginAction(
         handlerId: String,
         action: String,
         params: Map<String, String>,
-    ): Deferred<Boolean> {
+        origin: DeepLinkOrigin,
+        targetWindowId: String?,
+    ): Deferred<Boolean>? {
         val actionParams =
             params
                 .filterKeys { it != "id" && it != "action" }
                 .mapValues { (_, value) -> value.urlDecode() }
-        return scope.async(Dispatchers.Main) {
-            ai.rever.boss.components.plugin.registries.DeepLinkActionRegistryImpl
-                .dispatch(handlerId, action, actionParams)
+        return when (pluginActionDisposition(handlerId, action, actionParams.keys, origin)) {
+            PluginActionDisposition.RUN -> {
+                scope.async(Dispatchers.Main) {
+                    ai.rever.boss.components.plugin.registries.DeepLinkActionRegistryImpl
+                        .dispatch(handlerId, action, actionParams)
+                }
+            }
+
+            PluginActionDisposition.CONFIRM -> {
+                holdPluginActionForConfirmation(handlerId, action, actionParams, targetWindowId)
+            }
+
+            PluginActionDisposition.REJECT -> {
+                logger.warn(
+                    LogCategory.UI,
+                    "Plugin action refused before it could run",
+                    mapOf(
+                        "origin" to origin.name,
+                        "actionLength" to action.length,
+                        "paramKeyCount" to actionParams.size,
+                    ),
+                )
+                CompletableDeferred(false)
+            }
         }
+    }
+
+    /**
+     * Puts an externally delivered action in front of the operator instead of
+     * running it. Returns null — the "queued" answer, because the outcome is not
+     * knowable until they decide, and the single-instance caller's deadline is
+     * far shorter than a person.
+     *
+     * Without a window there is nowhere to ask, so the action is refused rather
+     * than run unattended.
+     */
+    private fun holdPluginActionForConfirmation(
+        handlerId: String,
+        action: String,
+        actionParams: Map<String, String>,
+        targetWindowId: String?,
+    ): Deferred<Boolean>? {
+        if (targetWindowId == null) {
+            logger.warn(
+                LogCategory.UI,
+                "No usable window registered, cannot ask about an external plugin action",
+                mapOf("handlerId" to handlerId),
+            )
+            return CompletableDeferred(false)
+        }
+        logger.info(
+            LogCategory.UI,
+            "Holding an external plugin action for operator confirmation",
+            mapOf("handlerId" to handlerId, "action" to action),
+        )
+        scope.launch {
+            PluginActionEventBus.requestConfirmation(handlerId, action, actionParams, targetWindowId)
+        }
+        return null
     }
 
     /** Opens a `boss://plugin?id=…` link's panel. Fire-and-forget: nothing awaits this today. */
