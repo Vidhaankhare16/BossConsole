@@ -486,6 +486,36 @@ class McpPolicyEngine(
         }
 
     /**
+     * [setToolPolicyIfAbsent] for a provider rule: write [action] for [providerId] only while that
+     * provider has no rule of its own, checked under the same [lock] the write takes.
+     *
+     * For callers that did not come through an approval prompt for this provider and so must never
+     * replace a choice the operator made, such as a plugin pack. Any existing provider rule, in
+     * either direction, refuses the write. Tool-scoped rules need no check here: they already
+     * outrank provider rules in [policyFor], so adding a provider rule cannot loosen one.
+     */
+    fun setProviderPolicyIfAbsent(
+        providerId: String,
+        action: McpPolicyAction,
+    ): McpProactivePolicyOutcome =
+        synchronized(lock) {
+            if (_fault.value is McpPolicyFault.PersistedPolicyUnreadable) {
+                return@synchronized McpProactivePolicyOutcome.PolicyUnreadable
+            }
+            if (providerId in _config.value.providerRules) {
+                return@synchronized McpProactivePolicyOutcome.Refused
+            }
+            writeConfig(
+                key = providerId,
+                logKey = "provider",
+                updated = _config.value.copy(providerRules = _config.value.providerRules + (providerId to action)),
+                successMessage = "Updated provider policy: ${action.name}",
+                failureMessage = "Failed to persist MCP provider policy update",
+                faultFor = { k, e -> McpPolicyFault.ProviderPolicyPersistFailed(k, e) },
+            )
+        }
+
+    /**
      * True when [providerId]'s own rule is DENY, or [toolName] (when this call has one in mind)
      * has a more specific DENY of its own - either one is what [setProviderPolicy]'s
      * `preserveDeny` guard exists to protect from being overwritten.
