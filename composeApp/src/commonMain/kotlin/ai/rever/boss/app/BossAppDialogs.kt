@@ -872,7 +872,8 @@ internal fun BossAppDialogs(state: BossAppState) {
                     "Operator confirmed an externally requested plugin action",
                     mapOf("windowId" to windowId, "handlerId" to pending.handlerId, "action" to pending.action),
                 )
-                DeepLinkActionRegistryImpl.dispatch(pending.handlerId, pending.action, pending.params)
+                val handled = DeepLinkActionRegistryImpl.dispatch(pending.handlerId, pending.action, pending.params)
+                if (!handled) StatusMessageManager.showMessage("Plugin action was not handled")
             },
         )
     }

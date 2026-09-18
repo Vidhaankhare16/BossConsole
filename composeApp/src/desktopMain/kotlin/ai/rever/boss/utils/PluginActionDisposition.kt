@@ -73,4 +73,13 @@ internal fun pluginActionDisposition(
  * True when every character survives being written into a one-line prompt: no
  * control characters, so nothing can forge a line break, and no blank token.
  */
-private fun isDisplayableActionToken(token: String): Boolean = token.isNotBlank() && token.none { it.isISOControl() }
+private fun isDisplayableActionToken(token: String): Boolean =
+    token.isNotBlank() && token.none { it.category in HIDDEN_ACTION_TOKEN_CHARACTERS }
+
+private val HIDDEN_ACTION_TOKEN_CHARACTERS =
+    setOf(
+        CharCategory.CONTROL,
+        CharCategory.FORMAT,
+        CharCategory.LINE_SEPARATOR,
+        CharCategory.PARAGRAPH_SEPARATOR,
+    )
