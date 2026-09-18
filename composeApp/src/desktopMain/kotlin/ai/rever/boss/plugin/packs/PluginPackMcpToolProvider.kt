@@ -5,6 +5,7 @@ import ai.rever.boss.plugin.api.McpToolDefinition
 import ai.rever.boss.plugin.api.McpToolProvider
 import ai.rever.boss.plugin.api.McpToolResult
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -133,6 +134,7 @@ internal object PluginPackJson {
                                 step.installedVersion?.let { put("installed", it) }
                                 step.targetVersion?.let { put("target", it) }
                                 put("detail", step.detail)
+                                step.closure?.let { putClosure(it) }
                             },
                         )
                     }
@@ -208,4 +210,26 @@ internal object PluginPackJson {
                 )
             }
         }
+}
+
+/**
+ * Adds the dependency closure a plugin row would install.
+ *
+ * Consent has to name every id that would arrive, not just the one the pack asked for, and has to
+ * say when the walk could not see the whole closure - an empty `alsoInstalls` on a row whose walk
+ * failed would otherwise read as "nothing else will be installed".
+ *
+ * File level so `plan` stays inside the host's method length and complexity limits.
+ */
+private fun JsonObjectBuilder.putClosure(closure: InstallClosure) {
+    if (closure.alsoInstalls.isNotEmpty()) {
+        put("alsoInstalls", buildJsonArray { closure.alsoInstalls.forEach { add(JsonPrimitive(it)) } })
+    }
+    if (!closure.partial) return
+    put("closureComplete", false)
+    if (closure.unresolved.isNotEmpty()) {
+        put("unresolved", buildJsonArray { closure.unresolved.forEach { add(JsonPrimitive(it)) } })
+    }
+    if (closure.cyclic) put("cyclic", true)
+    if (closure.truncated) put("truncated", true)
 }

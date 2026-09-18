@@ -28,6 +28,54 @@ sealed interface StoreListing {
     ) : StoreListing
 }
 
+/**
+ * What the policy looked like for one rule subject when the pack was planned.
+ *
+ * Captured at the snapshot, never re-read at write time. A pack apply is a queued persistent
+ * grant: the operator approves at T0, may reset the subject at T1, and the detached job writes at
+ * T2. Reading the counter at T2 and comparing it with itself is a tautology that authorizes
+ * exactly the write the reset was supposed to stop - and the "no rule exists" check cannot catch
+ * it either, because a reset is what removed the rule.
+ *
+ * @property revocation the subject's reset counter at snapshot time
+ * @property providerId the provider contributing a tool subject, so the write is checked against
+ *   the same provider-aware policy the plan was computed from. Null for a provider subject, and
+ *   for a tool no registered provider contributes.
+ */
+data class RuleStamp(
+    val revocation: Long,
+    val providerId: String?,
+)
+
+/**
+ * Every plugin an install of one pack row would actually bring in, named in full.
+ *
+ * A pack names one plugin; the store-backed installer installs that plugin's whole transitive
+ * dependency closure. Consent has to cover what actually happens, and this repo is explicit about
+ * it: "Transitive dependencies are resolved in the consent dialog, before installation ... Every id
+ * stays readable; do not ellipsize consent to additional installs." So the closure is resolved when
+ * the plan is computed, shown with the plan, and then applied *as computed* rather than recomputed
+ * at install time, where it could have grown since the operator looked at it.
+ *
+ * @property order dependencies first, the named plugin last - the order the installer runs
+ * @property alsoInstalls everything in [order] except the named plugin: the part consent must name
+ * @property unresolved ids the store could not describe. Their install is still attempted, but they
+ *   were not expanded, so the closure may be incomplete
+ * @property cyclic two store rows point at each other
+ * @property truncated the walk hit `PluginDependencyResolution.MAX_PLAN_SIZE` and stopped expanding,
+ *   so the real closure is larger than this one
+ */
+data class InstallClosure(
+    val order: List<String>,
+    val alsoInstalls: List<String>,
+    val unresolved: Set<String>,
+    val cyclic: Boolean,
+    val truncated: Boolean,
+) {
+    /** Whether the closure is known to be incomplete, so a caller can say so rather than imply it is exact. */
+    val partial: Boolean get() = unresolved.isNotEmpty() || cyclic || truncated
+}
+
 /** Everything a plan is computed from, read once so the plan describes one consistent moment. */
 data class PackSnapshot(
     val installed: Map<String, InstalledPlugin>,
@@ -35,6 +83,10 @@ data class PackSnapshot(
     val toolRules: Map<String, McpPolicyAction>,
     val providerRules: Map<String, McpPolicyAction>,
     val policyReadable: Boolean,
+    /** Keyed by [PackRule.subject]. Empty for a caller that writes no rules, such as a plan-only run. */
+    val stamps: Map<String, RuleStamp> = emptyMap(),
+    /** Keyed by plugin id, for rows that would install. Empty when nothing needs installing. */
+    val closures: Map<String, InstallClosure> = emptyMap(),
 )
 
 /** What applying a pack would do for one plugin row. */
@@ -67,6 +119,12 @@ data class PluginStep(
     val detail: String,
     /** Whether [targetVersion] is the store's current release. */
     val targetIsLatest: Boolean = false,
+    /**
+     * Everything this row would install, resolved at plan time. Null when the row installs nothing,
+     * or when it pins a version, which the closure-resolving installer cannot fetch and which
+     * therefore installs exactly the one plugin named.
+     */
+    val closure: InstallClosure? = null,
 ) {
     val needsWork: Boolean
         get() = kind == PluginStepKind.ENABLE || kind == PluginStepKind.INSTALL || kind == PluginStepKind.CHANGE_VERSION
@@ -86,6 +144,13 @@ enum class RuleStepKind {
 
     /** The policy file is unreadable, so the host is failing closed and nothing is written. */
     POLICY_UNREADABLE,
+
+    /**
+     * No rule exists, so the pack's rule would be added - but the tool's provider is DENYed, so
+     * adding it changes nothing: the invocation stays denied. Reported rather than written,
+     * because a plan that says `added` for a rule the operator cannot use is a plan that lies.
+     */
+    INEFFECTIVE_PROVIDER_DENY,
 }
 
 data class RuleStep(
@@ -149,10 +214,23 @@ object PluginPackPlanner {
             }
 
             else -> {
-                storeStep(step, snapshot.store[plugin.pluginId])
+                storeStep(step, snapshot.store[plugin.pluginId]).withClosure(snapshot)
             }
         }
     }
+
+    /**
+     * Attaches the resolved closure to a row that installs the store's current release.
+     *
+     * Only that row: [PluginStepKind.CHANGE_VERSION] and a pinned install go through the
+     * store-version installer, which installs the one plugin named and resolves nothing further.
+     */
+    private fun PluginStep.withClosure(snapshot: PackSnapshot): PluginStep =
+        if (kind == PluginStepKind.INSTALL && targetIsLatest) {
+            copy(closure = snapshot.closures[plugin.pluginId])
+        } else {
+            this
+        }
 
     private fun storeStep(
         step: Stepper,
@@ -233,11 +311,29 @@ object PluginPackPlanner {
                 PackRuleScope.PROVIDER -> snapshot.providerRules[rule.subject]
             }
         val kind =
-            when (existing) {
-                null -> RuleStepKind.ADD
-                rule.action -> RuleStepKind.ALREADY_SET
-                else -> RuleStepKind.KEPT_EXISTING
+            when {
+                existing == rule.action -> RuleStepKind.ALREADY_SET
+                existing != null -> RuleStepKind.KEPT_EXISTING
+                deniedByProvider(rule, snapshot) -> RuleStepKind.INEFFECTIVE_PROVIDER_DENY
+                else -> RuleStepKind.ADD
             }
         return RuleStep(rule, kind, existing)
+    }
+
+    /**
+     * Whether a tool rule would be written into the shadow of its provider's DENY.
+     *
+     * A tool rule outranks a provider rule in `policyFor`, *except* that `setToolPolicyIfAbsent`
+     * refuses to write one under a provider DENY at all - so the honest plan row is "this would
+     * not take effect", not "added". Only asked for a TOOL subject: a provider rule's own subject
+     * is the thing being denied, and that case is already `KEPT_EXISTING`.
+     */
+    private fun deniedByProvider(
+        rule: PackRule,
+        snapshot: PackSnapshot,
+    ): Boolean {
+        val providerId =
+            if (rule.scope == PackRuleScope.TOOL) snapshot.stamps[rule.subject]?.providerId else null
+        return providerId != null && snapshot.providerRules[providerId] == McpPolicyAction.DENY
     }
 }
