@@ -54,6 +54,8 @@ class PluginActionDispositionTest {
             assertEquals(PluginActionDisposition.REJECT, disposition(origin, handlerId = "my\r.plugin"))
             assertEquals(PluginActionDisposition.REJECT, disposition(origin, action = "sync" + Char(0)))
             assertEquals(PluginActionDisposition.REJECT, disposition(origin, paramKeys = listOf("ok", "bad\nkey")))
+            assertEquals(PluginActionDisposition.REJECT, disposition(origin, action = "sync\u2028forged"))
+            assertEquals(PluginActionDisposition.REJECT, disposition(origin, handlerId = "safe\u202Eevil"))
         }
     }
 

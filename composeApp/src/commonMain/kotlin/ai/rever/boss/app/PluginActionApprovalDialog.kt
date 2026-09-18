@@ -47,7 +47,7 @@ internal fun pluginActionApprovalMessage(request: PendingPluginAction): String {
         } else {
             "parameters: ${request.paramKeys.joinToString(", ")}"
         }
-    return "BOSS was asked from outside the app to run a plugin action. It has not run. " +
+    return "BOSS was asked through a link to run a plugin action. It has not run. " +
         "Confirm only if you expected it:\n\n" +
         "plugin: ${request.handlerId}\n" +
         "action: ${request.action}\n" +

@@ -1,6 +1,5 @@
 package ai.rever.boss.components.events
 
-import ai.rever.boss.ipc.IpcEventBridge
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -34,9 +33,6 @@ data class PluginActionConfirmEvent(
  * request and dispatches it only if the operator agrees.
  */
 object PluginActionEventBus {
-    /** Optional IPC bridge for forwarding events cross-process in kernel mode. */
-    @Volatile var ipcBridge: IpcEventBridge? = null
-
     private val _confirmEvents =
         MutableSharedFlow<PluginActionConfirmEvent>(
             // No replay: a held action must not be re-offered to every window
@@ -55,6 +51,5 @@ object PluginActionEventBus {
     ) {
         val event = PluginActionConfirmEvent(handlerId, action, params, sourceWindowId)
         _confirmEvents.emit(event)
-        ipcBridge?.forward("PluginActionConfirmEvent", event, sourceWindowId)
     }
 }

@@ -807,8 +807,11 @@ restart. There is no Settings row and no per-site exclusion.
   bridge. Project paths routinely contain usernames, so this widens *when* a filesystem
   path reaches every installed plugin, not *what* - the same install-time-gating stance
   as the bus above applies. In particular, `boss://` links can originate outside BOSS and
-  only a deep link that would start a terminal command consults `DeepLinkOrigin`, so an
+  a deep link that would start a terminal command, and a plugin action link, consult
+  `DeepLinkOrigin`; project/file deep links still do not, so an
   externally opened project link can trigger this broadcast without operator confirmation.
+  Plugin action links are the exception: external and in-process-plugin requests are held for
+  confirmation before their registered handler runs.
   It is recorded here because this paragraph is the canonical list of what a third-party
   plugin can observe.
 - **`PluginContext.projectSearchProvider` is the first UNGATED WRITE surface.**
@@ -961,8 +964,8 @@ URL produces the same input. Entry points therefore tag each link with a
   Also the default for an unstated origin, so a new caller that forgets to say
   gets the cautious handling.
 
-Two hosts consult it, and both for the same reason - each can type a command
-into a shell:
+Three hosts consult it. The first two share a reason - each can type a command
+into a shell - and the third reaches a plugin's own code instead:
 
 - `boss://terminal?command=`: an `OPERATOR_CLI` command runs as before, anything
   else is shown to the operator for confirmation first (the `boss` shell shim
@@ -976,8 +979,14 @@ into a shell:
   `CLICommand.LoadWorkspace` through the cold-start readiness queue to
   `WorkspaceLoadEvent.requiresConfirmation`, because only the window parses the
   file and so only it knows whether there is anything to confirm.
+- `boss://plugin?id=…&action=…`: the link dispatches into a plugin's registered
+  `DeepLinkActionHandler`, which is a program the operator did not ask to run, so an
+  `EXTERNAL` request is held (`pluginActionDisposition`) and
+  `PluginActionApprovalDialog` shows the handler, the action and the parameter KEYS -
+  never a parameter value, which is attacker-chosen text. Malformed prompt tokens are
+  refused outright.
 
-Other hosts - including `boss://plugin?id=…&action=…` - are unchanged.
+No other host consults it.
 
 **Single-instance channel**: `SingleInstanceManager` publishes
 `~/.boss/run/single-instance` (owner-only) with the channel endpoint and a token
@@ -986,10 +995,12 @@ Linux) or a loopback port (Windows). Every request must present the token,
 "another instance is running" means something answered on the channel rather than
 a pid existing, and a descriptor nobody answers on is reclaimed.
 
-A forwarded plugin action (`boss://plugin?id=...&action=...`) is acknowledged
-only when its handler reports true. Missing ids, missing handlers, declined
-and throwing handlers report failure. The channel waits up to five seconds;
-a timeout reports an unknown outcome and cancels dispatch if it is still queued.
+A forwarded operator-origin plugin action (`boss://plugin?id=...&action=...`) is
+acknowledged only when its handler reports true. An external action is acknowledged when
+it is queued for confirmation, before anything runs. Missing ids, refused actions, missing
+handlers, declined and throwing operator-origin handlers report failure. The channel waits
+up to five seconds for a direct dispatch; a timeout reports an unknown outcome and cancels it
+if it is still queued.
 An already-running synchronous handler cannot be interrupted. Startup therefore
 never retries plugin actions automatically, even after a lost response; auth and
 other open requests retain their existing retries. Panel-open links still only
