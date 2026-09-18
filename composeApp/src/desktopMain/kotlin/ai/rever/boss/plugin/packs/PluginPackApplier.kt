@@ -15,6 +15,19 @@ enum class RuleWrite {
 
     /** The engine accepted the rule but could not persist it. */
     NOT_SAVED,
+
+    /**
+     * The subject's provider is DENYed, so the engine refused a rule that would not have taken
+     * effect anyway. Distinct from [KEPT_EXISTING]: nothing of the operator's was preserved, and
+     * reporting this as added would claim a capability the pack does not get.
+     */
+    DENIED_BY_PROVIDER,
+
+    /**
+     * The operator reset this subject between approving the pack and this write running, so the
+     * authorization the write is carrying is stale. Refused rather than applied.
+     */
+    REVOKED_SINCE_APPROVAL,
 }
 
 /**
@@ -33,11 +46,16 @@ interface PluginPackEffects {
      *
      * @param latest whether [version] is the store's current release, which is the only version the
      *   dependency-resolving installer can fetch
+     * @param approvedOrder exactly what to install, dependencies first, as resolved when the plan
+     *   was computed and shown. Passed in rather than resolved here so the installs cannot exceed
+     *   what the operator was told: re-resolving at install time would silently follow a closure
+     *   that grew in between. Empty means the one plugin named, which is the pinned-version path.
      */
     suspend fun install(
         pluginId: String,
         version: String,
         latest: Boolean,
+        approvedOrder: List<String>,
     ): Result<Unit>
 
     /** Replace the installed build of [pluginId] with the store's [version]. */
@@ -48,8 +66,17 @@ interface PluginPackEffects {
 
     suspend fun enable(pluginId: String): Result<Unit>
 
-    /** Add [rule] only if no rule exists for its subject. Never replaces an operator's rule. */
-    fun addRule(rule: PackRule): RuleWrite
+    /**
+     * Add [rule] only if no rule exists for its subject. Never replaces an operator's rule.
+     *
+     * [stamp] is what the policy looked like for this subject when the pack was planned and shown
+     * to the operator. It is passed in rather than read here so a reset made in between refuses
+     * the write; see [RuleStamp].
+     */
+    fun addRule(
+        rule: PackRule,
+        stamp: RuleStamp,
+    ): RuleWrite
 }
 
 enum class PluginResultKind { ALREADY_SATISFIED, DONE, FAILED, BLOCKED }
@@ -60,7 +87,19 @@ data class PluginResult(
     val message: String,
 )
 
-enum class RuleResultKind { ADDED, ALREADY_SET, KEPT_EXISTING, POLICY_UNREADABLE, NOT_SAVED }
+enum class RuleResultKind {
+    ADDED,
+    ALREADY_SET,
+    KEPT_EXISTING,
+    POLICY_UNREADABLE,
+    NOT_SAVED,
+
+    /** The rule was not written because its provider is denied; writing it would change nothing. */
+    DENIED_BY_PROVIDER,
+
+    /** The operator reset this subject after approving the pack, so the write was refused. */
+    REVOKED_SINCE_APPROVAL,
+}
 
 data class RuleResult(
     val step: RuleStep,
@@ -106,7 +145,8 @@ class PluginPackApplier(
         pack: PluginPack,
         onProgress: (done: Int, total: Int, current: String) -> Unit = { _, _, _ -> },
     ): PackApplyResult {
-        val plan = PluginPackPlanner.plan(pack, effects.snapshot(pack))
+        val snapshot = effects.snapshot(pack)
+        val plan = PluginPackPlanner.plan(pack, snapshot)
         val total = plan.plugins.size + plan.rules.size
         var done = 0
 
@@ -120,7 +160,7 @@ class PluginPackApplier(
             plan.rules.map { step ->
                 currentCoroutineContext().ensureActive()
                 onProgress(done, total, step.rule.subject)
-                applyRule(step).also { done++ }
+                applyRule(step, snapshot).also { done++ }
             }
         onProgress(done, total, "")
         return PackApplyResult(pack.id, statusOf(plan, pluginResults, ruleResults), pluginResults, ruleResults)
@@ -139,7 +179,14 @@ class PluginPackApplier(
                 }
 
                 PluginStepKind.INSTALL -> {
-                    guarded { effects.install(pluginId, checkNotNull(step.targetVersion), step.targetIsLatest) }
+                    guarded {
+                        effects.install(
+                            pluginId,
+                            checkNotNull(step.targetVersion),
+                            step.targetIsLatest,
+                            step.closure?.order.orEmpty(),
+                        )
+                    }
                 }
 
                 PluginStepKind.CHANGE_VERSION -> {
@@ -166,7 +213,10 @@ class PluginPackApplier(
         }
     }
 
-    private fun applyRule(step: RuleStep): RuleResult {
+    private fun applyRule(
+        step: RuleStep,
+        snapshot: PackSnapshot,
+    ): RuleResult {
         val kind =
             when (step.kind) {
                 RuleStepKind.ALREADY_SET -> {
@@ -181,12 +231,21 @@ class PluginPackApplier(
                     RuleResultKind.POLICY_UNREADABLE
                 }
 
+                RuleStepKind.INEFFECTIVE_PROVIDER_DENY -> {
+                    RuleResultKind.DENIED_BY_PROVIDER
+                }
+
                 RuleStepKind.ADD -> {
-                    when (effects.addRule(step.rule)) {
+                    // The stamp the plan was computed from, not one read at write time: the
+                    // whole point is to notice a reset that happened in between.
+                    val stamp = snapshot.stamps[step.rule.subject] ?: RuleStamp(revocation = 0L, providerId = null)
+                    when (effects.addRule(step.rule, stamp)) {
                         RuleWrite.ADDED -> RuleResultKind.ADDED
                         RuleWrite.KEPT_EXISTING -> RuleResultKind.KEPT_EXISTING
                         RuleWrite.POLICY_UNREADABLE -> RuleResultKind.POLICY_UNREADABLE
                         RuleWrite.NOT_SAVED -> RuleResultKind.NOT_SAVED
+                        RuleWrite.DENIED_BY_PROVIDER -> RuleResultKind.DENIED_BY_PROVIDER
+                        RuleWrite.REVOKED_SINCE_APPROVAL -> RuleResultKind.REVOKED_SINCE_APPROVAL
                     }
                 }
             }
@@ -213,10 +272,19 @@ class PluginPackApplier(
 
     /**
      * A rule that did not land for a reason the operator did not choose. An existing operator rule
-     * is kept by design, so [RuleResultKind.KEPT_EXISTING] is not a miss.
+     * is kept by design, so [RuleResultKind.KEPT_EXISTING] is not a miss - and neither is
+     * [RuleResultKind.REVOKED_SINCE_APPROVAL], which is the operator's reset being honoured.
+     *
+     * [RuleResultKind.DENIED_BY_PROVIDER] IS a miss: the pack asked for something it did not get,
+     * and the status has to say the pack is not fully in effect rather than report it applied.
      */
     private fun RuleResultKind.missed(): Boolean {
-        val missed = setOf(RuleResultKind.POLICY_UNREADABLE, RuleResultKind.NOT_SAVED)
+        val missed =
+            setOf(
+                RuleResultKind.POLICY_UNREADABLE,
+                RuleResultKind.NOT_SAVED,
+                RuleResultKind.DENIED_BY_PROVIDER,
+            )
         return this in missed
     }
 
@@ -228,10 +296,21 @@ class PluginPackApplier(
     private fun doneMessage(step: PluginStep): String =
         when (step.kind) {
             PluginStepKind.ENABLE -> "Enabled."
-            PluginStepKind.INSTALL -> "Installed ${step.targetVersion}."
+            PluginStepKind.INSTALL -> installedMessage(step)
             PluginStepKind.CHANGE_VERSION -> "Changed ${step.installedVersion} to ${step.targetVersion}."
             else -> step.detail
         }
+
+    /**
+     * Names the dependencies that actually arrived, rather than reporting one install for what may
+     * have been several. The plan said which ids these would be; this says they did.
+     */
+    private fun installedMessage(step: PluginStep): String {
+        val also = step.closure?.alsoInstalls.orEmpty()
+        if (also.isEmpty()) return "Installed ${step.targetVersion}."
+        val noun = if (also.size == 1) "dependency" else "dependencies"
+        return "Installed ${step.targetVersion}, with ${also.size} $noun: ${also.joinToString(", ")}."
+    }
 
     /** A thrown failure becomes a row result; cancellation still stops the whole apply. */
     @Suppress("TooGenericExceptionCaught") // One broken installer must not abort the other rows.
