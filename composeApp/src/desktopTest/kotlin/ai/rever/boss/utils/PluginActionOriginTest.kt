@@ -1,5 +1,6 @@
 package ai.rever.boss.utils
 
+import ai.rever.boss.components.events.PluginActionEventBus
 import ai.rever.boss.components.plugin.registries.DeepLinkActionRegistryImpl
 import ai.rever.boss.plugin.api.DeepLinkActionHandler
 import kotlinx.coroutines.runBlocking
@@ -8,6 +9,7 @@ import javax.swing.SwingUtilities
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -46,21 +48,25 @@ class PluginActionOriginTest {
         val id = "external-action-test-${System.nanoTime()}"
         val calls = AtomicInteger()
         registerCounting(id, calls)
+        PluginActionEventBus.clearForTest()
         try {
             val verdict = DeepLinkHandler.processDeepLink("boss://plugin?id=$id&action=ping", DeepLinkOrigin.EXTERNAL)
 
-            // No window is registered in a test JVM, so there is nowhere to ask
-            // and the action is refused outright rather than run unattended --
-            // the same early return `boss://terminal` takes when no window can
-            // show the command. With a window it is held instead, and the verdict
-            // is null because nothing has run yet to have an outcome.
-            assertFalse(
-                runBlocking { requireNotNull(verdict).await() },
-                "with no window to confirm in, an externally delivered action must be refused",
-            )
+            // No window is registered in a test JVM, which is also what a cold start
+            // looks like: the argv link is processed before `application {}` builds
+            // one. The action is neither run nor refused - it is retained until a
+            // window can ask about it - so the verdict is null, the same "queued"
+            // answer a held action gives when a window did exist.
+            assertNull(verdict, "a held action has no outcome yet, so it reports queued rather than a verdict")
             drainUiThread()
             assertEquals(0, calls.get(), "the handler must not run for an externally delivered link")
+            assertEquals(
+                1,
+                PluginActionEventBus.pendingCount,
+                "the action must be waiting for a window rather than discarded",
+            )
         } finally {
+            PluginActionEventBus.clearForTest()
             DeepLinkActionRegistryImpl.unregister(id)
         }
     }

@@ -29,6 +29,10 @@ internal class PluginActionApprovalQueue {
     val size: Int
         get() = requests.size
 
+    /** No room for another request. Checked before claiming one off the bus, never after. */
+    val isFull: Boolean
+        get() = requests.size >= MAX_PENDING
+
     fun enqueue(request: PendingPluginAction): Boolean {
         if (requests.size >= MAX_PENDING) return false
         requests.add(request)

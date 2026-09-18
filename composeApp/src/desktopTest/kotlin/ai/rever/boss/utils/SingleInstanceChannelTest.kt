@@ -260,7 +260,13 @@ class SingleInstanceChannelTest {
         try {
             assertTrue(sendAsOperator("boss://plugin?id=$handlerId&action=ping"))
             assertFalse(sendAsOperator("boss://plugin?id=$handlerId&action=unknown"))
-            assertFalse(SingleInstanceManager.sendToExistingInstance("boss://plugin?id=$handlerId&action=ping"))
+            // An EXTERNAL forward is acknowledged as queued, not as handled: it is retained for a
+            // window to ask about, and nothing has run yet to report an outcome for. This used to
+            // read false only because a test JVM registers no window and the action was refused
+            // outright; it is now retained until one exists, which is the whole point of the gate
+            // on the cold-start path. The operator-origin assertions above are what still pin a
+            // real handler verdict.
+            assertTrue(SingleInstanceManager.sendToExistingInstance("boss://plugin?id=$handlerId&action=ping"))
         } finally {
             ai.rever.boss.components.plugin.registries.DeepLinkActionRegistryImpl
                 .unregister(handlerId)

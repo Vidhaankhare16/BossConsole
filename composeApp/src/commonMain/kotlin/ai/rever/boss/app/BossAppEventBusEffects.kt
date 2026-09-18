@@ -17,6 +17,7 @@ import ai.rever.boss.components.events.TerminalLinkEventBus
 import ai.rever.boss.components.events.URLEventBus
 import ai.rever.boss.components.events.WorkspaceEventBus
 import ai.rever.boss.components.events.WorkspaceLoadEvent
+import ai.rever.boss.components.events.shouldClaimPluginAction
 import ai.rever.boss.components.plugin.DependentRestartEventBus
 import ai.rever.boss.components.plugin.MissingHandlerPluginEventBus
 import ai.rever.boss.components.plugin.PanelIds
@@ -316,24 +317,35 @@ internal fun BossAppEventBusEffects(state: BossAppState) {
     // invocation. Nothing has been dispatched: the prompt in BossAppDialogs is
     // what reaches the plugin's handler, and only if the operator agrees.
     LaunchedEffect(windowId) {
-        PluginActionEventBus.confirmEvents
-            .filter { event -> event.sourceWindowId == windowId }
-            .onEach { event ->
-                val request = PendingPluginAction(event.handlerId, event.action, event.params)
-                if (state.pluginActionApprovals.enqueue(request)) {
-                    logger.info(
-                        LogCategory.SYSTEM,
-                        "Holding an externally requested plugin action for confirmation",
-                        mapOf("windowId" to windowId, "handlerId" to event.handlerId, "action" to event.action),
-                    )
-                } else {
-                    logger.warn(
-                        LogCategory.SYSTEM,
-                        "External plugin action refused: approval queue full",
-                        mapOf("windowId" to windowId, "handlerId" to event.handlerId),
-                    )
-                }
-            }.launchIn(this)
+        PluginActionEventBus.confirmEvents.collect { event ->
+            // The bus offers every retained request to every window; this window takes only
+            // the ones routing says are its own. A request whose preferred window has closed
+            // falls to whichever window claims it next, so it is never stranded.
+            val targetWindowOpen = event.sourceWindowId?.let { WindowFocusManager.isWindowOpen(it) } == true
+            if (!shouldClaimPluginAction(event, windowId, targetWindowOpen)) return@collect
+            // Leave it retained rather than claiming something there is no room to show:
+            // the bus re-offers it on its next scan, and another window may take it before
+            // then. Claiming and dropping would lose a request that was already acknowledged
+            // as queued. Debug, not warn - this is re-evaluated on every scan while full.
+            if (state.pluginActionApprovals.isFull) {
+                logger.debug(
+                    LogCategory.SYSTEM,
+                    "Leaving a plugin action retained: this window's approval queue is full",
+                    mapOf("windowId" to windowId, "handlerId" to event.handlerId),
+                )
+                return@collect
+            }
+            // Claim before enqueuing, and enqueue without suspending in between, so no other
+            // window can also show this request.
+            if (!PluginActionEventBus.claim(event)) return@collect
+            val request = PendingPluginAction(event.handlerId, event.action, event.params)
+            state.pluginActionApprovals.enqueue(request)
+            logger.info(
+                LogCategory.SYSTEM,
+                "Holding an externally requested plugin action for confirmation",
+                mapOf("windowId" to windowId, "handlerId" to event.handlerId, "action" to event.action),
+            )
+        }
     }
 
     // A delivered security prompt belongs to exactly one window.

@@ -349,9 +349,10 @@ actual object DeepLinkHandler {
     /**
      * Processes a link whose [origin] the caller can vouch for.
      *
-     * [origin] reaches the handlers that need it (currently `boss://terminal`)
-     * because no later stage can tell an operator's request apart from one some
-     * other program asked the OS to open.
+     * [origin] reaches the handlers that need it - `boss://terminal?command=`,
+     * `boss://workspace` and `boss://plugin?id=…&action=…` - because no later
+     * stage can tell an operator's request apart from one some other program
+     * asked the OS to open.
      *
      * @return a [Deferred] resolving to whether the link was actually acted on,
      *   for the one route that can answer that question today
@@ -666,8 +667,20 @@ actual object DeepLinkHandler {
      * knowable until they decide, and the single-instance caller's deadline is
      * far shorter than a person.
      *
-     * Without a window there is nowhere to ask, so the action is refused rather
-     * than run unattended.
+     * **A null [targetWindowId] holds the action rather than refusing it**, which
+     * is the difference between this and [openPluginPanel]'s early return. The
+     * cold-start path — the OS launching BOSS with a `boss://plugin` link in
+     * `argv`, which `CliBootstrap.dispatchPostLock` processes before
+     * `application {}` has built a window — resolves no window at all, and it is
+     * the *ordinary* way one of these links arrives, not an edge case. Refusing
+     * there meant the operator was never asked about precisely the request this
+     * gate exists to ask about. [PluginActionEventBus] retains it until a window
+     * opens and claims it; nothing runs in the meantime, and nothing can run
+     * without a confirmation, so this holds the security property exactly.
+     *
+     * Retaining before returning is also why [PluginActionEventBus.requestConfirmation]
+     * is not a suspending emit: this function may only answer "queued" for a request
+     * that is genuinely recorded. A full registry is reported as a refusal instead.
      */
     private fun holdPluginActionForConfirmation(
         handlerId: String,
@@ -675,10 +688,11 @@ actual object DeepLinkHandler {
         actionParams: Map<String, String>,
         targetWindowId: String?,
     ): Deferred<Boolean>? {
-        if (targetWindowId == null) {
+        val retained = PluginActionEventBus.requestConfirmation(handlerId, action, actionParams, targetWindowId)
+        if (!retained) {
             logger.warn(
                 LogCategory.UI,
-                "No usable window registered, cannot ask about an external plugin action",
+                "External plugin action refused: too many are already awaiting confirmation",
                 mapOf("handlerId" to handlerId),
             )
             return CompletableDeferred(false)
@@ -686,11 +700,14 @@ actual object DeepLinkHandler {
         logger.info(
             LogCategory.UI,
             "Holding an external plugin action for operator confirmation",
-            mapOf("handlerId" to handlerId, "action" to action),
+            mapOf(
+                "handlerId" to handlerId,
+                "action" to action,
+                // Distinguishes the cold-start hold from the ordinary one in the log,
+                // because the two differ in when the prompt can possibly appear.
+                "hasWindow" to (targetWindowId != null),
+            ),
         )
-        scope.launch {
-            PluginActionEventBus.requestConfirmation(handlerId, action, actionParams, targetWindowId)
-        }
         return null
     }
 
