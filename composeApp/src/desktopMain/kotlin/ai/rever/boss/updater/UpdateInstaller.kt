@@ -3,6 +3,7 @@ package ai.rever.boss.updater
 import ai.rever.boss.utils.AppVersion
 import ai.rever.boss.utils.BOSS_MACOS_APP_BUNDLE_NAME
 import ai.rever.boss.utils.BOSS_MACOS_BUNDLE_ID
+import ai.rever.boss.utils.CodeSourceLocation
 import ai.rever.boss.utils.Version
 import ai.rever.boss.utils.WindowsProtocolCleanup
 import ai.rever.boss.utils.logging.BossLogger
@@ -803,11 +804,9 @@ object UpdateInstaller {
      */
     private fun currentCodeSourceFile(): File? =
         try {
-            UpdateInstaller::class.java.protectionDomain
-                ?.codeSource
-                ?.location
-                ?.toURI()
-                ?.let(::File)
+            // File(URI) REJECTS a URI carrying an authority, so on a network-share
+            // install this threw and the launcher lost its code-source fallback.
+            CodeSourceLocation.fileFor(UpdateInstaller::class.java)
         } catch (e: Exception) {
             logger.debug(
                 LogCategory.SYSTEM,
@@ -1026,12 +1025,11 @@ object UpdateInstaller {
      */
     private fun getCurrentJarPath(): File? =
         try {
-            val jarPath =
-                UpdateInstaller::class.java.protectionDomain.codeSource.location
-                    .toURI()
-                    .path
-            val jarFile = File(jarPath)
-            if (jarFile.exists() && jarFile.name.endsWith(".jar")) {
+            // Resolved through CodeSourceLocation, not URI.path: on a network-share
+            // install the path component has already lost the server name, so the
+            // existence check below failed and the JAR update silently never ran.
+            val jarFile = CodeSourceLocation.fileFor(UpdateInstaller::class.java)
+            if (jarFile != null && jarFile.exists() && jarFile.name.endsWith(".jar")) {
                 jarFile
             } else {
                 null

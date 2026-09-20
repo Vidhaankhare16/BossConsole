@@ -257,13 +257,12 @@ object WindowsDefaultBrowserHandler {
     private fun getApplicationPath(): String? =
         try {
             // Try to get the path from the running JAR/EXE
-            val jarPath =
-                WindowsDefaultBrowserHandler::class.java.protectionDomain.codeSource.location
-                    .toURI()
-                    .path
+            // Resolved through CodeSourceLocation, not URI.path: on a network-share
+            // install the path component has already lost the server name.
+            val jarPath = CodeSourceLocation.fileFor(WindowsDefaultBrowserHandler::class.java)?.path
 
             when {
-                jarPath.endsWith(".jar") -> {
+                jarPath?.endsWith(".jar") == true -> {
                     // Running from JAR - look for launcher executable
                     val jarFile = File(jarPath)
                     val launcherPath = jarFile.parentFile.resolve("BOSS.exe")
@@ -277,13 +276,16 @@ object WindowsDefaultBrowserHandler {
                     }
                 }
 
-                jarPath.contains("BOSS.exe") -> {
+                jarPath?.contains("BOSS.exe") == true -> {
                     // Already an executable
                     File(jarPath).absolutePath
                 }
 
                 else -> {
-                    // Development environment - look for packaged executable
+                    // Development environment - look for packaged executable.
+                    // Also where an unresolvable code source lands, which is the
+                    // shape of a dev run: giving up there loses the one lookup
+                    // that would have found something.
                     val workingDir = File(System.getProperty("user.dir"))
                     val possiblePaths =
                         listOf(
