@@ -401,6 +401,20 @@ fun main(args: Array<String>) {
     // Configure MCP workspace tool window creator
     ai.rever.boss.mcp.WorkspaceMcpToolProvider.windowCreator = { WindowManager.createNewWindow().id }
 
+    // Both sources are desktop-only; the provider is commonMain, so it reads them
+    // through suppliers wired here - the same shape as windowCreator above.
+    ai.rever.boss.mcp.IntrospectionMcpToolProvider.healthSupplier = {
+        ai.rever.boss.health
+            .WorkspaceHealthCollector()
+            .collect()
+    }
+    ai.rever.boss.mcp.IntrospectionMcpToolProvider.performanceSupplier = {
+        ai.rever.boss.mcp.PerformanceReading(
+            snapshot = ai.rever.boss.performance.PerformanceMonitor.currentSnapshot.value,
+            health = ai.rever.boss.performance.PerformanceMonitor.currentHealth.value,
+        )
+    }
+
     // Create initial window BEFORE application{} to prevent auto-recreation
     if (!chromiumNeedsDownload) {
         WindowManager.createNewWindow()
