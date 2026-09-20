@@ -210,53 +210,62 @@ goto :eof
 REM Smart detection for URL, file, or folder
 REM Usage: call :detect_and_route "argument"
 :detect_and_route
+REM No `echo %arg% | findstr` here. %arg% is substituted into the command line
+REM BEFORE cmd parses it, so an "&" in the argument started a second command -
+REM reached by the bare `boss <anything>` form, which takes whatever the shell
+REM hands it. These are pure string tests: no subshell to inject into.
 setlocal
 set "arg=%~1"
 
 REM Check if it's a URL (has http:// or https://)
-echo %arg% | findstr /i "^http://" >nul
-if %errorlevel%==0 goto :detect_url
-echo %arg% | findstr /i "^https://" >nul
-if %errorlevel%==0 goto :detect_url
+if /i "%arg:~0,7%"=="http://" goto :detect_url
+if /i "%arg:~0,8%"=="https://" goto :detect_url
 
-REM Check for common TLDs (looks like a domain)
-echo %arg% | findstr /i "\.com" >nul
-if %errorlevel%==0 goto :detect_domain
-echo %arg% | findstr /i "\.org" >nul
-if %errorlevel%==0 goto :detect_domain
-echo %arg% | findstr /i "\.net" >nul
-if %errorlevel%==0 goto :detect_domain
-echo %arg% | findstr /i "\.io" >nul
-if %errorlevel%==0 goto :detect_domain
-echo %arg% | findstr /i "\.dev" >nul
-if %errorlevel%==0 goto :detect_domain
+REM Check for common TLDs (looks like a domain). cmd's substring replacement is
+REM case-insensitive, so a value that still equals itself once the TLD is
+REM removed did not contain it - the same answer findstr /i gave.
+if not "%arg:.com=%"=="%arg%" goto :detect_domain
+if not "%arg:.org=%"=="%arg%" goto :detect_domain
+if not "%arg:.net=%"=="%arg%" goto :detect_domain
+if not "%arg:.io=%"=="%arg%" goto :detect_domain
+if not "%arg:.dev=%"=="%arg%" goto :detect_domain
 
-REM Check if it's a file or folder
-if exist "%arg%" (
-    if exist "%arg%\*" (
-        REM It's a directory - expand to full path
-        set "fullpath=%~f1"
-        call :urlencode "%fullpath%" ENCODED
-        start "" "boss://folder?path=%ENCODED%"
-        endlocal
-        goto :eof
-    ) else (
-        REM It's a file - expand to full path
-        set "fullpath=%~f1"
-        call :urlencode "%fullpath%" ENCODED
-        start "" "boss://file?path=%ENCODED%"
-        endlocal
-        goto :eof
-    )
-)
+REM Check if it's a file or folder.
+REM
+REM Labels rather than a parenthesized if/else: cmd expands %fullpath% and
+REM %ENCODED% when it parses the WHOLE block, which is before the `set` and the
+REM `call` that fill them have run. Both were therefore empty, and every
+REM `boss <file>` / `boss <folder>` shipped a deep link with path= and nothing
+REM after it. Outside a block each line expands as it executes, so the values
+REM are the ones just computed - and no delayed expansion is needed, which
+REM keeps a literal "!" in a path intact.
+if not exist "%arg%" goto :detect_unknown
+if exist "%arg%\*" goto :detect_folder
+goto :detect_file
+
+:detect_folder
+set "fullpath=%~f1"
+call :urlencode "%fullpath%" ENCODED
+start "" "boss://folder?path=%ENCODED%"
+endlocal
+goto :eof
+
+:detect_file
+set "fullpath=%~f1"
+call :urlencode "%fullpath%" ENCODED
+start "" "boss://file?path=%ENCODED%"
+endlocal
+goto :eof
+
+:detect_unknown
 
 REM Could not detect type
-echo Error: Could not determine type for: %arg%
+echo Error: Could not determine type for: "%arg%"
 echo.
 echo Did you mean:
-echo   boss url %arg%      - Open as URL
-echo   boss file %arg%     - Open as file
-echo   boss folder %arg%   - Open as folder
+echo   boss url "%arg%"      - Open as URL
+echo   boss file "%arg%"     - Open as file
+echo   boss folder "%arg%"   - Open as folder
 echo.
 echo Run 'boss --help' for usage information
 endlocal

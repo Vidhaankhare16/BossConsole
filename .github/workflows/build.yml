@@ -53,6 +53,12 @@ jobs:
         # (regressed twice: #877 misaligned resume, and the SIGPIPE status bug).
         run: bash scripts/test/test-tus-slice.sh
 
+      - name: CLI launcher smart-detection guards
+        # boss.bat's `boss <anything>` form piped the argument through a
+        # subshell, and its file/folder branches shipped an empty path.
+        # Source-shape checks: cmd cannot run on this runner.
+        run: bash scripts/test/test-cli-launcher-detection.sh
+
       - name: 🧪 Release notarization — retry/resume tests
         # Guards the macOS notarization retry path: a dropped status poll must
         # resume the existing submission, never re-upload, and an actual Apple
