@@ -71,7 +71,10 @@ internal fun pluginActionDisposition(
 
 /**
  * True when every character survives being written into a one-line prompt: no
- * control characters, so nothing can forge a line break, and no blank token.
+ * blank token, no control character (so nothing can forge a line break), and no
+ * invisible format character - a bidi override or U+2028 forges a line just as
+ * well as a control character - so the token cannot mislead the prompt it is
+ * named in.
  */
 private fun isDisplayableActionToken(token: String): Boolean =
     token.isNotBlank() && token.none { it.category in HIDDEN_ACTION_TOKEN_CHARACTERS }
