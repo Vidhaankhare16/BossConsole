@@ -29,9 +29,19 @@ internal class PluginActionApprovalQueue {
     val size: Int
         get() = requests.size
 
-    /** No room for another request. Checked before claiming one off the bus, never after. */
-    val isFull: Boolean
-        get() = requests.size >= MAX_PENDING
+    /**
+     * Whether this window may take another request off the bus: only while nothing is on screen.
+     *
+     * One at a time, as the dependency bus does - AGENTS.md: "a window waits for its current
+     * dialog to close before handling another prompt." A claimed request lives in this queue and
+     * dies with the window, so claiming every eligible request at once let one window drain the
+     * whole retained registry into itself, and closing it then abandoned all of them. Claiming
+     * only while this is true leaves every request but the one actually shown on the bus, where
+     * the next window - or this one, once its dialog closes - can still take it. The bus re-offers
+     * each rescan, so waiting costs nothing. Checked before claiming, never after.
+     */
+    val canClaim: Boolean
+        get() = current == null
 
     fun enqueue(request: PendingPluginAction): Boolean {
         if (requests.size >= MAX_PENDING) return false

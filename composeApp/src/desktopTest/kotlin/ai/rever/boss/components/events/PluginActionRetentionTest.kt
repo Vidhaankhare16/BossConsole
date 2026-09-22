@@ -115,7 +115,7 @@ class PluginActionRetentionTest {
             backgroundScope.launch {
                 PluginActionEventBus.confirmEvents.collect { event ->
                     if (shouldClaimPluginAction(event, "window-1", targetWindowOpen = false) &&
-                        !queue.isFull &&
+                        queue.canClaim &&
                         PluginActionEventBus.claim(event)
                     ) {
                         queue.enqueue(PendingPluginAction(event.handlerId, event.action, event.params))
@@ -130,19 +130,73 @@ class PluginActionRetentionTest {
             advanceTimeBy(PLUGIN_ACTION_RESCAN_INTERVAL_MS * 2)
             runCurrent()
 
-            assertEquals(3, queue.size, "every retained request must reach the window's queue")
-            // Confirming the shown one advances to the next in arrival order, and never
-            // skips or reorders: the operator answers the question they were shown.
-            val first = requireNotNull(queue.current)
-            assertEquals("first", first.action)
-            assertTrue(queue.consume(first))
-            val second = requireNotNull(queue.current)
-            assertEquals("second", second.action)
-            assertTrue(queue.consume(second))
-            val third = requireNotNull(queue.current)
-            assertEquals("third", third.action)
-            assertTrue(queue.consume(third))
+            // One at a time: the window holds only what it is showing; the rest stay retained.
+            assertEquals(1, queue.size, "a window holds only the request it is showing")
+            assertEquals(2, PluginActionEventBus.pendingCount, "the rest stay on the bus")
+
+            // Answering the shown one lets the window take the next on its next scan, in arrival
+            // order, never skipping or reordering: the operator answers the question they were shown.
+            for (expected in listOf("first", "second", "third")) {
+                val shown = requireNotNull(queue.current)
+                assertEquals(expected, shown.action)
+                assertTrue(queue.consume(shown))
+                advanceTimeBy(PLUGIN_ACTION_RESCAN_INTERVAL_MS * 2)
+                runCurrent()
+            }
             assertNull(queue.current)
+            assertEquals(0, PluginActionEventBus.pendingCount)
+        }
+
+    @Test
+    fun `a window takes one request at a time so closing it abandons only the one shown`() =
+        runTest {
+            // Cold start with a full registry: every request retained before any window collects.
+            repeat(PluginActionEventBus.MAX_PENDING) { i ->
+                val admitted =
+                    PluginActionEventBus.requestConfirmation("plugin.a", "act-$i", emptyMap(), sourceWindowId = null)
+                assertTrue(admitted, "the registry must admit up to its capacity")
+            }
+
+            val firstWindow = PluginActionApprovalQueue()
+            val firstCollector =
+                backgroundScope.launch {
+                    PluginActionEventBus.confirmEvents.collect { event ->
+                        if (shouldClaimPluginAction(event, "window-1", targetWindowOpen = false) &&
+                            firstWindow.canClaim &&
+                            PluginActionEventBus.claim(event)
+                        ) {
+                            firstWindow.enqueue(PendingPluginAction(event.handlerId, event.action, event.params))
+                        }
+                    }
+                }
+            advanceTimeBy(PLUGIN_ACTION_RESCAN_INTERVAL_MS * 3)
+            runCurrent()
+
+            // Claiming every eligible request drained all of them into this one window, so closing
+            // it abandoned the lot. One at a time, it holds only the prompt it is showing.
+            assertEquals(1, firstWindow.size)
+            assertEquals(PluginActionEventBus.MAX_PENDING - 1, PluginActionEventBus.pendingCount)
+
+            // Closing the window drops its queue: exactly the one claimed prompt is lost.
+            firstCollector.cancel()
+
+            val secondWindow = PluginActionApprovalQueue()
+            backgroundScope.launch {
+                PluginActionEventBus.confirmEvents.collect { event ->
+                    if (shouldClaimPluginAction(event, "window-2", targetWindowOpen = false) &&
+                        secondWindow.canClaim &&
+                        PluginActionEventBus.claim(event)
+                    ) {
+                        secondWindow.enqueue(PendingPluginAction(event.handlerId, event.action, event.params))
+                    }
+                }
+            }
+            advanceTimeBy(PLUGIN_ACTION_RESCAN_INTERVAL_MS * 3)
+            runCurrent()
+
+            // Everything the first window never showed is still there for the next one, in order.
+            assertEquals("act-1", secondWindow.current?.action, "the next window picks up where the first left off")
+            assertEquals(PluginActionEventBus.MAX_PENDING - 2, PluginActionEventBus.pendingCount)
         }
 
     @Test

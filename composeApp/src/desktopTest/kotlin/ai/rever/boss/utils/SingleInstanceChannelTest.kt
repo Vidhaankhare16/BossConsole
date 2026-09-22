@@ -1,5 +1,6 @@
 package ai.rever.boss.utils
 
+import ai.rever.boss.components.events.PluginActionEventBus
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -270,6 +271,9 @@ class SingleInstanceChannelTest {
         } finally {
             ai.rever.boss.components.plugin.registries.DeepLinkActionRegistryImpl
                 .unregister(handlerId)
+            // The EXTERNAL forward retained an entry in a process-global, 16-slot registry that
+            // every test class in this JVM shares; left behind, it can fill up another file's test.
+            PluginActionEventBus.clearForTest()
         }
 
         assertFalse(sendAsOperator("boss://plugin?id=no-such-handler&action=ping"))

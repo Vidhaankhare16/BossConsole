@@ -323,23 +323,28 @@ internal fun BossAppEventBusEffects(state: BossAppState) {
             // falls to whichever window claims it next, so it is never stranded.
             val targetWindowOpen = event.sourceWindowId?.let { WindowFocusManager.isWindowOpen(it) } == true
             if (!shouldClaimPluginAction(event, windowId, targetWindowOpen)) return@collect
-            // Leave it retained rather than claiming something there is no room to show:
-            // the bus re-offers it on its next scan, and another window may take it before
-            // then. Claiming and dropping would lose a request that was already acknowledged
-            // as queued. Debug, not warn - this is re-evaluated on every scan while full.
-            if (state.pluginActionApprovals.isFull) {
-                logger.debug(
-                    LogCategory.SYSTEM,
-                    "Leaving a plugin action retained: this window's approval queue is full",
-                    mapOf("windowId" to windowId, "handlerId" to event.handlerId),
-                )
-                return@collect
-            }
+            // One at a time: take another request only once nothing is on screen. A claimed
+            // request dies with this window, so leaving the rest retained means closing it
+            // abandons at most the one prompt actually shown - never the whole registry. See
+            // PluginActionApprovalQueue.canClaim. Silent on purpose: this is re-evaluated every
+            // scan while a dialog is open, and the request is simply still waiting.
+            if (!state.pluginActionApprovals.canClaim) return@collect
             // Claim before enqueuing, and enqueue without suspending in between, so no other
             // window can also show this request.
             if (!PluginActionEventBus.claim(event)) return@collect
             val request = PendingPluginAction(event.handlerId, event.action, event.params)
-            state.pluginActionApprovals.enqueue(request)
+            if (!state.pluginActionApprovals.enqueue(request)) {
+                // Unreachable - canClaim just held, on this thread, with no suspension since.
+                // But claim() has already taken the request off the bus and the forwarding
+                // caller has been told it was queued, so this is the one point in the design
+                // where a request could vanish without a trace. Say so rather than drop it.
+                logger.warn(
+                    LogCategory.SYSTEM,
+                    "A claimed plugin action could not be queued and was lost",
+                    mapOf("windowId" to windowId, "handlerId" to event.handlerId, "action" to event.action),
+                )
+                return@collect
+            }
             logger.info(
                 LogCategory.SYSTEM,
                 "Holding an externally requested plugin action for confirmation",
