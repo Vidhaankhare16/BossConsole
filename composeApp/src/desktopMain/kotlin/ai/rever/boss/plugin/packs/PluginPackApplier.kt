@@ -24,6 +24,13 @@ enum class RuleWrite {
     DENIED_BY_PROVIDER,
 
     /**
+     * The tool's effective policy is DENY for a reason other than its provider's rule - today a
+     * DENY default for its risk class - and the engine does not write a rule under an effective
+     * DENY. Kept apart from [DENIED_BY_PROVIDER] so the result names the cause that was checked.
+     */
+    DENIED_BY_POLICY,
+
+    /**
      * The operator reset this subject between approving the pack and this write running, so the
      * authorization the write is carrying is stale. Refused rather than applied.
      */
@@ -46,10 +53,12 @@ interface PluginPackEffects {
      *
      * @param latest whether [version] is the store's current release, which is the only version the
      *   dependency-resolving installer can fetch
-     * @param approvedOrder exactly what to install, dependencies first, as resolved when the plan
-     *   was computed and shown. Passed in rather than resolved here so the installs cannot exceed
-     *   what the operator was told: re-resolving at install time would silently follow a closure
-     *   that grew in between. Empty means the one plugin named, which is the pinned-version path.
+     * @param approvedOrder exactly what to install, dependencies first, as resolved by this apply's
+     *   own plan. Passed in rather than resolved here so the plan row, the install and the reported
+     *   result describe one closure: re-resolving at install time would follow a closure that grew
+     *   in between. This bounds the install to that plan, not to anything the operator saw - a
+     *   direct `pack_apply` with no earlier `pack_plan` has no closure in its consent dialog. Empty
+     *   means the one plugin named, which is the pinned-version path.
      */
     suspend fun install(
         pluginId: String,
@@ -96,6 +105,9 @@ enum class RuleResultKind {
 
     /** The rule was not written because its provider is denied; writing it would change nothing. */
     DENIED_BY_PROVIDER,
+
+    /** The rule was not written because the tool's effective policy is DENY for another reason. */
+    DENIED_BY_POLICY,
 
     /** The operator reset this subject after approving the pack, so the write was refused. */
     REVOKED_SINCE_APPROVAL,
@@ -245,6 +257,7 @@ class PluginPackApplier(
                         RuleWrite.POLICY_UNREADABLE -> RuleResultKind.POLICY_UNREADABLE
                         RuleWrite.NOT_SAVED -> RuleResultKind.NOT_SAVED
                         RuleWrite.DENIED_BY_PROVIDER -> RuleResultKind.DENIED_BY_PROVIDER
+                        RuleWrite.DENIED_BY_POLICY -> RuleResultKind.DENIED_BY_POLICY
                         RuleWrite.REVOKED_SINCE_APPROVAL -> RuleResultKind.REVOKED_SINCE_APPROVAL
                     }
                 }
@@ -275,8 +288,9 @@ class PluginPackApplier(
      * is kept by design, so [RuleResultKind.KEPT_EXISTING] is not a miss - and neither is
      * [RuleResultKind.REVOKED_SINCE_APPROVAL], which is the operator's reset being honoured.
      *
-     * [RuleResultKind.DENIED_BY_PROVIDER] IS a miss: the pack asked for something it did not get,
-     * and the status has to say the pack is not fully in effect rather than report it applied.
+     * [RuleResultKind.DENIED_BY_PROVIDER] and [RuleResultKind.DENIED_BY_POLICY] ARE misses: the
+     * pack asked for something it did not get, and the status has to say the pack is not fully in
+     * effect rather than report it applied.
      */
     private fun RuleResultKind.missed(): Boolean {
         val missed =
@@ -284,6 +298,7 @@ class PluginPackApplier(
                 RuleResultKind.POLICY_UNREADABLE,
                 RuleResultKind.NOT_SAVED,
                 RuleResultKind.DENIED_BY_PROVIDER,
+                RuleResultKind.DENIED_BY_POLICY,
             )
         return this in missed
     }

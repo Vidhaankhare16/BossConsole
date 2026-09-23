@@ -6,6 +6,7 @@ import ai.rever.boss.components.plugin.PluginDependencyResolution
 import ai.rever.boss.components.plugin.PluginStoreVersionBridge
 import ai.rever.boss.components.plugin.StoreVersionInstaller
 import ai.rever.boss.components.plugin.StoreVersionRequest
+import ai.rever.boss.mcp.McpPolicyAction
 import ai.rever.boss.mcp.McpPolicyEngine
 import ai.rever.boss.mcp.McpPolicyFault
 import ai.rever.boss.mcp.McpProactivePolicyOutcome
@@ -40,6 +41,7 @@ class DesktopPluginPackEffects(
     private val manager: () -> DynamicPluginManager? = { DynamicPluginManager.anyActiveManager() },
     private val store: () -> PluginRepository? = { PluginStoreSetup.remoteRepository },
     private val policy: McpPolicyEngine = McpToolRegistryImpl.policyEngine,
+    private val providerOf: (String) -> String? = ::providerFor,
 ) : PluginPackEffects {
     override suspend fun snapshot(pack: PluginPack): PackSnapshot {
         val states = manager()?.pluginStates?.value.orEmpty()
@@ -106,15 +108,19 @@ class DesktopPluginPackEffects(
     }
 
     /**
-     * The reset counter, and the contributing provider, for one rule subject *now* - i.e. at the
+     * The reset counters, and the contributing provider, for one rule subject *now* - i.e. at the
      * moment the plan the operator is shown is computed. [addRule] compares against this rather
      * than re-reading, so an operator reset between approval and the detached write refuses it.
      */
     private fun stampFor(rule: PackRule): RuleStamp =
         when (rule.scope) {
             PackRuleScope.TOOL -> {
-                val providerId = providerFor(rule.subject)
-                RuleStamp(policy.revocationVersion(rule.subject, providerId), providerId)
+                val providerId = providerOf(rule.subject)
+                RuleStamp(
+                    revocation = policy.revocationVersion(rule.subject),
+                    providerId = providerId,
+                    providerRevocation = providerId?.let { policy.providerRevocationVersion(it) } ?: 0L,
+                )
             }
 
             PackRuleScope.PROVIDER -> {
@@ -182,17 +188,17 @@ class DesktopPluginPackEffects(
         // Refuse before asking the engine when the reset already happened: the engine's own
         // stale-stamp check reports a plain Refused, which is indistinguishable from "a rule
         // appeared", and the operator needs to be told their reset is what stopped this.
-        val current =
-            when (rule.scope) {
-                PackRuleScope.TOOL -> policy.revocationVersion(rule.subject, stamp.providerId)
-                PackRuleScope.PROVIDER -> policy.providerRevocationVersion(rule.subject)
-            }
-        if (current != stamp.revocation) return RuleWrite.REVOKED_SINCE_APPROVAL
+        if (policy.resetSince(rule, stamp)) return RuleWrite.REVOKED_SINCE_APPROVAL
 
+        // Re-resolved rather than taken from the stamp: rules are written after the pack's
+        // installs, so the tool of a plugin this pack just installed has a provider now that it
+        // did not have when the snapshot was taken - and a DENY on that provider must be seen.
+        val providerId = if (rule.scope == PackRuleScope.TOOL) providerOf(rule.subject) ?: stamp.providerId else null
         val outcome =
             when (rule.scope) {
                 PackRuleScope.TOOL -> {
-                    policy.setToolPolicyIfAbsent(rule.subject, rule.action, stamp.revocation, stamp.providerId)
+                    val expected = policy.expectedToolRevocation(stamp, providerId)
+                    policy.setToolPolicyIfAbsent(rule.subject, rule.action, expected, providerId)
                 }
 
                 PackRuleScope.PROVIDER -> {
@@ -202,7 +208,7 @@ class DesktopPluginPackEffects(
         return when (outcome) {
             McpProactivePolicyOutcome.Saved -> RuleWrite.ADDED
             McpProactivePolicyOutcome.Refused -> RuleWrite.KEPT_EXISTING
-            McpProactivePolicyOutcome.Denied -> RuleWrite.DENIED_BY_PROVIDER
+            McpProactivePolicyOutcome.Denied -> policy.deniedCause(providerId)
             McpProactivePolicyOutcome.PolicyUnreadable -> RuleWrite.POLICY_UNREADABLE
             is McpProactivePolicyOutcome.Failed -> RuleWrite.NOT_SAVED
         }
@@ -268,15 +274,66 @@ class DesktopPluginPackEffects(
  *
  * Needed so a tool rule is checked against the same provider-aware policy the invocation will be:
  * `policyFor(tool, null)` cannot see a provider-scoped DENY, so without this a pack could report a
- * rule `added` while every call to that tool stayed denied.
+ * rule `added` while every call to that tool stayed denied. Reads `allTools`, not `tools`: the
+ * latter hides kill-switched and permission-denied tools, and a rule for one of those still answers
+ * to its provider.
  *
  * File level rather than a method, to stay under the host's per-class function limit; it reads a
  * global registry and needs nothing from an instance.
  */
 private fun providerFor(toolName: String): String? =
-    McpToolRegistryImpl.tools.value
+    McpToolRegistryImpl.allTools.value
         .firstOrNull { it.definition.name == toolName }
         ?.providerId
+
+/**
+ * Whether the operator reset [rule]'s subject since [stamp] was taken - for a tool, its own counter
+ * or that of the provider the snapshot saw contributing it.
+ */
+private fun McpPolicyEngine.resetSince(
+    rule: PackRule,
+    stamp: RuleStamp,
+): Boolean =
+    when (rule.scope) {
+        PackRuleScope.TOOL -> {
+            revocationVersion(rule.subject) != stamp.revocation ||
+                (stamp.providerId != null && providerRevocationVersion(stamp.providerId) != stamp.providerRevocation)
+        }
+
+        PackRuleScope.PROVIDER -> {
+            providerRevocationVersion(rule.subject) != stamp.revocation
+        }
+    }
+
+/**
+ * The engine's summed counter to hold a tool write to: the tool's stamped counter plus its
+ * provider's - the stamped one when [providerId] is the provider the snapshot saw, so a reset of it
+ * racing this write is still refused under the engine's lock, and the current one when the provider
+ * only appeared since, which the operator could not have reset against this pack.
+ */
+private fun McpPolicyEngine.expectedToolRevocation(
+    stamp: RuleStamp,
+    providerId: String?,
+): Long {
+    val provider =
+        when (providerId) {
+            null -> 0L
+            stamp.providerId -> stamp.providerRevocation
+            else -> providerRevocationVersion(providerId)
+        }
+    return stamp.revocation + provider
+}
+
+/**
+ * Why the engine refused a tool write as [McpProactivePolicyOutcome.Denied]. It returns that for any
+ * effective DENY, so name the provider only when the provider's own rule is what denies it.
+ */
+private fun McpPolicyEngine.deniedCause(providerId: String?): RuleWrite =
+    if (providerId != null && config.value.providerRules[providerId] == McpPolicyAction.DENY) {
+        RuleWrite.DENIED_BY_PROVIDER
+    } else {
+        RuleWrite.DENIED_BY_POLICY
+    }
 
 /**
  * One plugin's closure, or the plugin alone when the walk could not be completed.

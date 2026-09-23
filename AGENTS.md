@@ -236,9 +236,12 @@ A plugin pack consents through `pack_plan` rather than this dialog, and the same
 `pack_plan` resolves each install's closure with the same `planFor` and returns the extra ids as
 `alsoInstalls`, with `closureComplete: false` plus `unresolved`, `cyclic` or `truncated` when the
 walk could not see all of it. `pack_apply` installs the order its own fresh plan resolved and is
-handed that order rather than re-walking the store, so the installs cannot exceed the closure the
-operator was shown - a walk repeated at install time could follow store rows that changed in
-between.
+handed that order rather than re-walking the store, so the installs cannot exceed the closure
+that apply's own plan resolved - a walk repeated at install time could follow store rows that
+changed in between. That bounds the install to the plan, not to what the operator saw: the
+`pack_apply` approval dialog shows the raw pack arguments, so a direct `pack_apply` with no
+earlier `pack_plan` has no closure in its consent. Showing the closure in that dialog is a
+recorded follow-up.
 
 Three properties of the plan are worth knowing before touching it. The plugin the user was asked
 about is always in the plan and always last, even if it turns out to be present, because the

@@ -37,14 +37,24 @@ sealed interface StoreListing {
  * exactly the write the reset was supposed to stop - and the "no rule exists" check cannot catch
  * it either, because a reset is what removed the rule.
  *
- * @property revocation the subject's reset counter at snapshot time
- * @property providerId the provider contributing a tool subject, so the write is checked against
- *   the same provider-aware policy the plan was computed from. Null for a provider subject, and
- *   for a tool no registered provider contributes.
+ * The tool's own counter and its provider's are kept apart rather than summed. The provider is
+ * re-resolved when the rule is written, because the flow a pack exists for - install plugin X, then
+ * allow X's tool - has no provider at snapshot time: the tool registers only once the install has
+ * run. A summed stamp would read that newly visible provider's counter as a reset that never
+ * happened; kept apart, the write is held to the tool's stamp and to the stamped provider's, and a
+ * provider that appeared since is checked as it is now.
+ *
+ * @property revocation the subject's own reset counter at snapshot time: the tool's for a tool
+ *   subject (excluding its provider's), the provider's for a provider subject
+ * @property providerId the provider contributing a tool subject at snapshot time, so the plan is
+ *   computed against the same provider-aware policy the invocation will be. Null for a provider
+ *   subject, and for a tool no registered provider contributes yet.
+ * @property providerRevocation [providerId]'s reset counter at snapshot time; 0 when it is null
  */
 data class RuleStamp(
     val revocation: Long,
     val providerId: String?,
+    val providerRevocation: Long = 0L,
 )
 
 /**

@@ -5,6 +5,7 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNull
 
 /**
  * [McpPolicyEngine.setProviderPolicyIfAbsent]: a provider rule written by something the operator did
@@ -62,6 +63,29 @@ class McpPolicyEngineProviderIfAbsentTest {
         engine.setProviderPolicyIfAbsent("terminal", McpPolicyAction.ALLOW)
 
         assertEquals(McpPolicyAction.ASK, engine.policyFor("run_command", "terminal"))
+    }
+
+    @Test
+    fun `a write carrying a stamp from before a provider reset is refused`() {
+        val engine = McpPolicyEngine(policyFile = policyFile())
+        val stamp = engine.providerRevocationVersion("com.example")
+
+        engine.revokeProviderPolicy("com.example")
+
+        val outcome = engine.setProviderPolicyIfAbsent("com.example", McpPolicyAction.ALLOW, expectedRevocation = stamp)
+        assertEquals(McpProactivePolicyOutcome.Refused, outcome)
+        assertNull(engine.config.value.providerRules["com.example"], "a reset must not be undone by a stale write")
+    }
+
+    @Test
+    fun `a write carrying the current stamp is saved`() {
+        val engine = McpPolicyEngine(policyFile = policyFile())
+        engine.revokeProviderPolicy("com.example")
+        val stamp = engine.providerRevocationVersion("com.example")
+        assertEquals(1L, stamp, "a reset must advance the provider's counter")
+
+        val outcome = engine.setProviderPolicyIfAbsent("com.example", McpPolicyAction.ALLOW, expectedRevocation = stamp)
+        assertEquals(McpProactivePolicyOutcome.Saved, outcome)
     }
 
     @Test
