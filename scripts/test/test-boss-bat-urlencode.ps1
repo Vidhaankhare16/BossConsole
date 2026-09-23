@@ -59,6 +59,30 @@ Assert-True ($detectScopeMatch.Success) ':detect_and_route is followed by a setl
 Assert-True ($detectScopeMatch.Groups[1].Value -eq 'Disable') `
     ':detect_and_route opens DisableDelayedExpansion (EnableDelayedExpansion would eat ! in the auto-detect path)'
 
+# :detect_and_route must never read %arg% outside quotes. cmd substitutes
+# the value into the line before it parses the line, so an unquoted read
+# lets an & in the argument (a file named R&D.txt) end the command and run
+# the rest as a second one. `echo %arg% | findstr` did that on every
+# detection line. This is the check the Ubuntu leg can enforce; the live
+# probes below show the same thing on cmd.exe.
+function Get-UnquotedArgReads {
+    param([string[]]$Lines)
+    @($Lines | Where-Object {
+        $_ -notmatch '^\s*REM\b' -and (($_ -replace '"[^"]*"', '') -match '%arg\b')
+    })
+}
+$batLines = $bat -split "`r?`n"
+$routeStart = [array]::IndexOf($batLines, ':detect_and_route')
+Assert-True ($routeStart -ge 0) ':detect_and_route label found for the quoting check'
+$routeLines = $batLines[$routeStart..($batLines.Count - 1)]
+Assert-True (@(Get-UnquotedArgReads @('echo %arg% | findstr /i "^http://" >nul')).Count -eq 1) `
+    'the quoting check flags the old `echo %arg% | findstr` line (so it can fail)'
+$unquotedReads = @(Get-UnquotedArgReads $routeLines)
+Assert-True ($unquotedReads.Count -eq 0) `
+    ":detect_and_route reads %arg% only inside quotes (unquoted: $($unquotedReads -join ' || '))"
+Assert-True (-not (@($routeLines | Where-Object { $_ -notmatch '^\s*REM\b' -and $_ -match 'findstr' }).Count)) `
+    ':detect_and_route runs no findstr subshell'
+
 # :urlencode must guard an EscapeDataString($null) (#1136): the fix casts
 # [Environment]::GetEnvironmentVariable to [string] (so a missing var
 # reads as '', not $null) and guards an empty value before the call.
@@ -196,7 +220,7 @@ try {
         Write-Error 'ASSERTION FAILED: No "Error: Could not determine type" line captured (probe did not reach the no-match branch)'
         exit 1
     }
-    Assert-True ($errLine -like 'Error: Could not determine type for: xxxxx!yyyyy') `
+    Assert-True ($errLine -like 'Error: Could not determine type for: "xxxxx!yyyyy"') `
         "literal ! survives the auto-detect path (got: $errLine)"
 } finally {
     Remove-Item $detectProbe -ErrorAction SilentlyContinue
@@ -281,6 +305,77 @@ try {
 } finally {
     Remove-Item $detectFolderProbe -ErrorAction SilentlyContinue
     Remove-Item $folderProbe -Recurse -ErrorAction SilentlyContinue
+}
+
+# --- :detect_and_route with & in the argument -----------------------------
+# The detection checks used to be `echo %arg% | findstr`, so the payload
+# below ran `echo side-effect>amp-marker.txt` as a second command, and a
+# real file named R&D.txt routed nowhere. The probe runs from its own
+# directory so the marker path has no spaces to break the old command, and
+# it also checks that URL and domain detection give the answers they did.
+$ampDir = Join-Path $env:TEMP ("boss-detect-amp-" + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $ampDir | Out-Null
+$ampFile = Join-Path $ampDir 'R&D.txt'
+Set-Content -Path $ampFile -Value 'probe' -Encoding Ascii
+$ampMarker = Join-Path $ampDir 'amp-marker.txt'
+$ampPayload = 'nosuch&echo side-effect>amp-marker.txt'
+
+$ampProbe = Join-Path $env:TEMP ("boss-detect-amp-probe-" + [guid]::NewGuid().ToString('N') + '.cmd')
+$ampBody = @"
+@echo off
+cd /d "$ampDir"
+setlocal DisableDelayedExpansion
+call :detect_and_route "$ampPayload"
+call :detect_and_route "R&D.txt"
+call :detect_and_route "HTTP://Example.com/x"
+call :detect_and_route "Example.COM"
+goto :amp_done
+$detectWithEcho
+$block
+:amp_done
+endlocal
+"@
+Set-Content -Path $ampProbe -Value $ampBody -Encoding Ascii
+
+try {
+    $ampOutput = & cmd.exe /c $ampProbe 2>&1 | ForEach-Object { "$_" }
+    Assert-True (-not (Test-Path $ampMarker)) 'an & in the argument does not run the rest as a second command'
+    $ampErr = $ampOutput | Where-Object { $_ -like 'Error: Could not determine type for: *' } | Select-Object -First 1
+    Assert-True ($ampErr -eq "Error: Could not determine type for: `"$ampPayload`"") `
+        "the no-match branch prints the whole argument, & included (got: $ampErr)"
+    $ampFileLine = $ampOutput | Where-Object { $_ -like 'boss://file?path=*' } | Select-Object -First 1
+    Assert-True ($null -ne $ampFileLine) '`boss R&D.txt` routes to boss://file?path='
+    if ($null -ne $ampFileLine) {
+        $ampFileUrl = ($ampFileLine -replace '^boss://file\?path=', '')
+        Assert-True ([System.Uri]::UnescapeDataString($ampFileUrl) -eq $ampFile) `
+            "boss://file?path= for R&D.txt round-trips to the probe path: got '$ampFileUrl', expected '$ampFile'"
+    }
+    Assert-True (@($ampOutput) -contains 'boss://url?url=HTTP%3A%2F%2FExample.com%2Fx') `
+        'an http:// prefix in any case is still detected as a URL and passed as-is'
+    Assert-True (@($ampOutput) -contains 'boss://url?url=https%3A%2F%2FExample.COM') `
+        'a TLD in any case is still detected as a domain and gets https://'
+} finally {
+    Remove-Item $ampProbe -ErrorAction SilentlyContinue
+}
+
+# Mutation check: the same payload through the OLD detection line does
+# create the marker, so the probe above can tell the two apart.
+$oldAmpProbe = Join-Path $env:TEMP ("boss-detect-amp-mutation-" + [guid]::NewGuid().ToString('N') + '.cmd')
+$oldAmpBody = @"
+@echo off
+cd /d "$ampDir"
+setlocal DisableDelayedExpansion
+set "arg=$ampPayload"
+echo %arg% | findstr /i "^http://" >nul
+endlocal
+"@
+Set-Content -Path $oldAmpProbe -Value $oldAmpBody -Encoding Ascii
+try {
+    & cmd.exe /c $oldAmpProbe 2>&1 | Out-Null
+    Assert-True (Test-Path $ampMarker) 'mutation check: the OLD `echo %arg% | findstr` line runs the payload'
+} finally {
+    Remove-Item $oldAmpProbe -ErrorAction SilentlyContinue
+    Remove-Item $ampDir -Recurse -ErrorAction SilentlyContinue
 }
 
 # --- :detect_and_route mutation check (#1136) ----------------------------

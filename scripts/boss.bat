@@ -225,28 +225,31 @@ REM Usage: call :detect_and_route "argument"
 REM Delayed expansion is OFF here too: nothing in this function reads !var!
 REM (the only ! in this script are comments at :17/:18/:143/:208). EnableDelayedExpansion
 REM would re-create the literal-!-eating defect the top-level DisableDelayedExpansion
-REM just fixed, on the auto-detect path and on the %ENCODED% reads at :274/:281.
+REM just fixed, on the auto-detect path and on the %ENCODED% reads in
+REM :detect_url and :detect_domain.
 REM Exit with the matching endlocal at each branch below.
 setlocal DisableDelayedExpansion
 set "arg=%~1"
 
-REM Check if it's a URL (has http:// or https://)
-echo %arg% | findstr /i "^http://" >nul
-if %errorlevel%==0 goto :detect_url
-echo %arg% | findstr /i "^https://" >nul
-if %errorlevel%==0 goto :detect_url
+REM Every read of arg below is inside quotes. cmd substitutes the value into
+REM the line before it parses the line, so an unquoted read lets an & in the
+REM argument (a file named R&D.txt, say) end the command and run the rest as
+REM a second one. The checks used to echo arg into findstr, which did exactly
+REM that on every line; they are now plain string tests with no subshell.
+REM (No percent-wrapped arg in these comments: cmd expands it in REM lines.)
 
-REM Check for common TLDs (looks like a domain)
-echo %arg% | findstr /i "\.com" >nul
-if %errorlevel%==0 goto :detect_domain
-echo %arg% | findstr /i "\.org" >nul
-if %errorlevel%==0 goto :detect_domain
-echo %arg% | findstr /i "\.net" >nul
-if %errorlevel%==0 goto :detect_domain
-echo %arg% | findstr /i "\.io" >nul
-if %errorlevel%==0 goto :detect_domain
-echo %arg% | findstr /i "\.dev" >nul
-if %errorlevel%==0 goto :detect_domain
+REM Check if it's a URL (has http:// or https://)
+if /i "%arg:~0,7%"=="http://" goto :detect_url
+if /i "%arg:~0,8%"=="https://" goto :detect_url
+
+REM Check for common TLDs (looks like a domain). Substring replacement is
+REM case-insensitive, so the value only changes when it contains the TLD in
+REM any case - the same answer findstr /i gave.
+if not "%arg:.com=%"=="%arg%" goto :detect_domain
+if not "%arg:.org=%"=="%arg%" goto :detect_domain
+if not "%arg:.net=%"=="%arg%" goto :detect_domain
+if not "%arg:.io=%"=="%arg%" goto :detect_domain
+if not "%arg:.dev=%"=="%arg%" goto :detect_domain
 
 REM Check if it's a file or folder. Variables read inside a parenthesized
 REM block expand at parse time, before any set/call fills them, so the
@@ -257,12 +260,12 @@ REM boss://file?path= with an empty path.
 if exist "%arg%" goto :detect_file_or_folder
 
 REM Could not detect type
-echo Error: Could not determine type for: %arg%
+echo Error: Could not determine type for: "%arg%"
 echo.
 echo Did you mean:
-echo   boss url %arg%      - Open as URL
-echo   boss file %arg%     - Open as file
-echo   boss folder %arg%   - Open as folder
+echo   boss url "%arg%"      - Open as URL
+echo   boss file "%arg%"     - Open as file
+echo   boss folder "%arg%"   - Open as folder
 echo.
 echo Run 'boss --help' for usage information
 endlocal
