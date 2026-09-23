@@ -7,13 +7,16 @@ import ai.rever.boss.health.HealthCodes
 import ai.rever.boss.health.HealthFinding
 import ai.rever.boss.health.HealthFix
 import ai.rever.boss.health.HealthSeverity
+import ai.rever.boss.health.HealthSourceWarnings
 import ai.rever.boss.health.WorkspaceHealthReport
+import ai.rever.boss.utils.logging.BossLogger
 import ai.rever.boss.window.MenuActionsHandler
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
@@ -24,6 +27,8 @@ import org.junit.Test
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
 
 class WorkspaceHealthStatusItemTest {
     @get:Rule
@@ -97,6 +102,57 @@ class WorkspaceHealthStatusItemTest {
         rule.onAllNodesWithText("1 issue").assertCountEquals(0)
         rule.onNodeWithText("Workspace Health").assertExists()
     }
+
+    @Test
+    fun `a read that throws does not stop the badge or the loop`() {
+        HealthSourceWarnings.clear()
+        val reads = AtomicInteger()
+        val report = WorkspaceHealthReport(findings = listOf(stoppedPlugin))
+        rule.setContent {
+            WorkspaceHealthStatusItem(
+                readReport = {
+                    // Fails first, answers once, then fails on every read after.
+                    if (reads.incrementAndGet() == 2) report else error("report assembly failed")
+                },
+                refreshIntervalMs = 50,
+            )
+        }
+
+        rule.waitUntil(timeoutMillis = 5_000) {
+            rule.mainClock.advanceTimeBy(100)
+            reads.get() >= 4
+        }
+
+        // The loop survived the first failure to read again, and later failures kept the last report.
+        rule.onNodeWithText("1 issue").assertExists()
+        HealthSourceWarnings.clear()
+    }
+
+    @Test
+    fun `a report that keeps failing is logged once until it reads again`() {
+        HealthSourceWarnings.clear()
+        val marker = "report assembly failed ${System.nanoTime()}"
+        val failing = { error(marker) }
+        val healthy = { WorkspaceHealthReport(findings = emptyList()) }
+
+        repeat(3) { assertNull(readReportContained(failing)) }
+        assertEquals(1, warnings(marker), "the status bar re-reads every few seconds; one warning is enough")
+
+        assertEquals(healthy(), readReportContained(healthy))
+        assertNull(readReportContained(failing))
+        assertEquals(2, warnings(marker), "failing again after a clean read is a new failure")
+        HealthSourceWarnings.clear()
+    }
+
+    @Test
+    fun `cancellation is not contained`() {
+        assertFailsWith<CancellationException> { readReportContained { throw CancellationException("window closed") } }
+    }
+
+    private fun warnings(marker: String): Int =
+        BossLogger.getRecentLogs(limit = 1000).count {
+            it.message == "Workspace health report could not be read" && it.data?.get("error") == marker
+        }
 
     @Test
     fun `the card lists each finding with its remedy`() {

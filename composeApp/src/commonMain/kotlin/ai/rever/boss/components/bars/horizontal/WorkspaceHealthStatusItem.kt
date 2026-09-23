@@ -6,12 +6,15 @@ import ai.rever.boss.components.overlays.HoverTooltipBox
 import ai.rever.boss.components.overlays.TooltipPlacement
 import ai.rever.boss.health.BROWSER_ENGINE_SETTINGS_SECTION
 import ai.rever.boss.health.HealthFix
+import ai.rever.boss.health.HealthSourceWarnings
 import ai.rever.boss.health.WorkspaceHealthReport
 import ai.rever.boss.health.indicatorLevel
 import ai.rever.boss.health.readWorkspaceHealth
 import ai.rever.boss.health.showsStatusItem
 import ai.rever.boss.health.statusDescription
 import ai.rever.boss.health.statusText
+import ai.rever.boss.utils.logging.BossLogger
+import ai.rever.boss.utils.logging.LogCategory
 import ai.rever.boss.window.LocalWindowId
 import ai.rever.boss.window.MenuActionsHandler
 import androidx.compose.foundation.clickable
@@ -40,6 +43,7 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -49,6 +53,11 @@ import kotlinx.coroutines.withContext
  * memory, plus one read-only check that the browser engine is installed, so this is cheap.
  */
 private const val HEALTH_REFRESH_INTERVAL_MS = 5_000L
+
+/** [HealthSourceWarnings] key for the report as a whole, apart from the per-area and per-window keys. */
+private const val REPORT_WARNING_KEY = "report"
+
+private val logger = BossLogger.forComponent("WorkspaceHealth")
 
 /**
  * The workspace health item: nothing while there is nothing to report, and "2 issues" in the
@@ -69,7 +78,8 @@ internal fun WorkspaceHealthStatusItem(
     val windowId = LocalWindowId.current
     val report by produceState<WorkspaceHealthReport?>(initialValue = null, readReport, refreshIntervalMs) {
         while (true) {
-            value = withContext(Dispatchers.IO) { readReport() }
+            // A failed read keeps the last report on screen; see [readReportContained].
+            withContext(Dispatchers.IO) { readReportContained(readReport) }?.let { value = it }
             delay(refreshIntervalMs)
         }
     }
@@ -93,6 +103,38 @@ internal fun WorkspaceHealthStatusItem(
             onDismiss = { showDialog = false },
         )
     }
+}
+
+/**
+ * One read of the report, or null when the read throws.
+ *
+ * The collector contains each source, but it assembles the report outside those guards, and this read
+ * now runs every few seconds in every window. An exception escaping the `produceState` effect would
+ * cancel the window's recomposer effect job rather than just this badge, so it is contained here: the
+ * badge keeps its last report, the failure is logged once until a read succeeds again, and the loop
+ * keeps polling. LinkageError is caught for the collector's reason; cancellation is rethrown so the
+ * loop still stops with its composition.
+ */
+@Suppress("TooGenericExceptionCaught")
+internal fun readReportContained(readReport: () -> WorkspaceHealthReport): WorkspaceHealthReport? =
+    try {
+        readReport().also { HealthSourceWarnings.recovered(REPORT_WARNING_KEY) }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        reportUnreadable(e)
+    } catch (e: LinkageError) {
+        reportUnreadable(e)
+    }
+
+private fun reportUnreadable(error: Throwable): Nothing? {
+    if (!HealthSourceWarnings.failed(REPORT_WARNING_KEY)) return null
+    logger.warn(
+        LogCategory.SYSTEM,
+        "Workspace health report could not be read",
+        mapOf("error" to (error.message ?: error::class.simpleName)),
+    )
+    return null
 }
 
 @Composable
