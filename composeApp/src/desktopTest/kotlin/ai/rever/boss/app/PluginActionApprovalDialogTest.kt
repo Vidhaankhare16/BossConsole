@@ -1,5 +1,6 @@
 package ai.rever.boss.app
 
+import ai.rever.boss.components.events.PluginActionEventBus
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -44,6 +45,38 @@ class PluginActionApprovalDialogTest {
         rule.runOnIdle {
             assertEquals(2, dispatches)
             assertNull(queue.current)
+        }
+    }
+
+    @Test
+    fun `title counts requests still retained on the bus, not just the one shown`() {
+        PluginActionEventBus.clearForTest()
+        try {
+            // A window holds only the request it shows, so its queue is 1 while three more wait.
+            val queue = PluginActionApprovalQueue()
+            queue.enqueue(PendingPluginAction("my.plugin", "shown", emptyMap()))
+            repeat(3) {
+                PluginActionEventBus.requestConfirmation("my.plugin", "waiting-$it", emptyMap(), sourceWindowId = null)
+            }
+            rule.setContent {
+                queue.current?.let { pending ->
+                    PluginActionApprovalDialog(
+                        request = pending,
+                        pendingCount = pluginActionBacklog(queue),
+                        onDismiss = {},
+                        onConfirm = {},
+                    )
+                }
+            }
+            rule.onNodeWithText("Run this plugin action? (4 pending)").assertExists()
+
+            // Another window claiming one of the retained requests shrinks the backlog shown here.
+            rule.runOnIdle {
+                PluginActionEventBus.claim(PluginActionEventBus.confirmEventsSnapshotForTest().first())
+            }
+            rule.onNodeWithText("Run this plugin action? (3 pending)").assertExists()
+        } finally {
+            PluginActionEventBus.clearForTest()
         }
     }
 }

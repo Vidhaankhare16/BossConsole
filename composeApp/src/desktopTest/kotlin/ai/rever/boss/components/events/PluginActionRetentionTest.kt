@@ -109,6 +109,63 @@ class PluginActionRetentionTest {
         }
 
     @Test
+    fun `two idle windows racing for two requests each take one`() =
+        runTest {
+            // The production collector checks canClaim before claim, so a window that has just
+            // taken one request must leave the next for the other window rather than take both.
+            val first = PluginActionApprovalQueue()
+            val second = PluginActionApprovalQueue()
+            for ((windowId, queue) in listOf("window-1" to first, "window-2" to second)) {
+                backgroundScope.launch {
+                    PluginActionEventBus.confirmEvents.collect { event ->
+                        if (shouldClaimPluginAction(event, windowId, targetWindowOpen = false) &&
+                            queue.canClaim &&
+                            PluginActionEventBus.claim(event)
+                        ) {
+                            queue.enqueue(PendingPluginAction(event.handlerId, event.action, event.params))
+                        }
+                    }
+                }
+            }
+            runCurrent()
+
+            PluginActionEventBus.requestConfirmation("plugin.a", "one", emptyMap(), sourceWindowId = null)
+            PluginActionEventBus.requestConfirmation("plugin.a", "two", emptyMap(), sourceWindowId = null)
+            advanceTimeBy(PLUGIN_ACTION_RESCAN_INTERVAL_MS * 3)
+            runCurrent()
+
+            assertEquals(1, first.size, "a window showing a prompt must not take a second request")
+            assertEquals(1, second.size, "the other idle window must get the request the first left")
+            assertEquals(
+                setOf("one", "two"),
+                setOf(first.current?.action, second.current?.action),
+                "each request is shown exactly once, in one window",
+            )
+            assertEquals(0, PluginActionEventBus.pendingCount)
+        }
+
+    @Test
+    fun `the observable count follows retain, claim and clear`() {
+        assertEquals(0, PluginActionEventBus.pendingCountFlow.value)
+        retain("plugin.a")
+        retain("plugin.b")
+        assertEquals(2, PluginActionEventBus.pendingCountFlow.value, "a retained request must be counted")
+
+        assertTrue(PluginActionEventBus.claim(PluginActionEventBus.confirmEventsSnapshotForTest().first()))
+        assertEquals(1, PluginActionEventBus.pendingCountFlow.value, "a claimed request must stop being counted")
+
+        repeat(PluginActionEventBus.MAX_PENDING) { retain("plugin.flood") }
+        assertEquals(
+            PluginActionEventBus.MAX_PENDING,
+            PluginActionEventBus.pendingCountFlow.value,
+            "a refused request must not be counted",
+        )
+
+        PluginActionEventBus.clearForTest()
+        assertEquals(0, PluginActionEventBus.pendingCountFlow.value)
+    }
+
+    @Test
     fun `a confirmed dispatch preserves the per-window FIFO`() =
         runTest {
             val queue = PluginActionApprovalQueue()

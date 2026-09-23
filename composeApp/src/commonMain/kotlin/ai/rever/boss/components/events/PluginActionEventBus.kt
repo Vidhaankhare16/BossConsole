@@ -4,6 +4,9 @@ import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.transform
@@ -106,8 +109,18 @@ object PluginActionEventBus {
     /** A snapshot of [pending] at this instant, oldest first; never the live map. */
     private fun snapshot(): List<PluginActionConfirmEvent> = synchronized(lock) { pending.values.toList() }
 
+    private val retained = MutableStateFlow(0)
+
     /** How many requests are held but not yet claimed. */
     val pendingCount: Int get() = synchronized(lock) { pending.size }
+
+    /**
+     * [pendingCount] as state a prompt can recompose on. A window holds only the request it is
+     * showing (`PluginActionApprovalQueue.canClaim`), so its own queue cannot say how many more are
+     * waiting - under a flood of links that number lives here. Written under [lock] alongside
+     * [pending], so it never reports a size the map did not have.
+     */
+    val pendingCountFlow: StateFlow<Int> = retained.asStateFlow()
 
     /**
      * Retain an action link for the operator of [sourceWindowId] - or, when that is null, for
@@ -135,6 +148,7 @@ object PluginActionEventBus {
                     false
                 } else {
                     pending[nextKey++] = event
+                    retained.value = pending.size
                     true
                 }
             }
@@ -157,6 +171,7 @@ object PluginActionEventBus {
                 false
             } else {
                 pending.remove(key)
+                retained.value = pending.size
                 true
             }
         }
@@ -166,7 +181,10 @@ object PluginActionEventBus {
 
     /** Drops every retained request. Tests only; there is no product reason to forget one. */
     internal fun clearForTest() {
-        synchronized(lock) { pending.clear() }
+        synchronized(lock) {
+            pending.clear()
+            retained.value = 0
+        }
     }
 
     const val MAX_PENDING = 16

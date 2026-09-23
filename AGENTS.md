@@ -1001,7 +1001,9 @@ dropped silently. Every open window is offered every retained request and
 that one has closed - so exactly one window shows it. A window claims one request at a time,
 only while nothing is on screen (`PluginActionApprovalQueue.canClaim`), as the dependency bus
 does, so every other request stays retained for the next window. Closing a window after its
-prompt appears can still abandon that one claimed request. A retained request carries no age
+prompt appears can still abandon that one claimed request. Because the window's own queue
+holds only the prompt on screen, the prompt's "(n pending)" counts that one plus every request
+still retained on the bus (`pluginActionBacklog`), so a flood of links is visible. A retained request carries no age
 and does not expire: the registry is bounded and a request reaches its handler only through
 the prompt, so a prompt shown long after the link was clicked still fails closed rather than
 acting on its own. That is a recorded decision, not an oversight - a TTL, or the arrival time

@@ -319,8 +319,9 @@ internal fun BossAppEventBusEffects(state: BossAppState) {
     LaunchedEffect(windowId) {
         PluginActionEventBus.confirmEvents.collect { event ->
             // The bus offers every retained request to every window; this window takes only
-            // the ones routing says are its own. A request whose preferred window has closed
-            // falls to whichever window claims it next, so it is never stranded.
+            // the ones routing says are its own. An unclaimed request whose preferred window has
+            // closed falls to whichever window claims it next; once claimed, it lives in this
+            // window's queue and dies with it.
             val targetWindowOpen = event.sourceWindowId?.let { WindowFocusManager.isWindowOpen(it) } == true
             if (!shouldClaimPluginAction(event, windowId, targetWindowOpen)) return@collect
             // One at a time: take another request only once nothing is on screen. A claimed

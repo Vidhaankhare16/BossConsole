@@ -861,7 +861,7 @@ internal fun BossAppDialogs(state: BossAppState) {
     state.pluginActionApprovals.current?.let { pending ->
         PluginActionApprovalDialog(
             request = pending,
-            pendingCount = state.pluginActionApprovals.size,
+            pendingCount = pluginActionBacklog(state.pluginActionApprovals),
             onDismiss = { state.pluginActionApprovals.consume(pending) },
             onConfirm = confirm@{
                 // Consume before dispatch; the dialog also calls onDismiss after onConfirm.
