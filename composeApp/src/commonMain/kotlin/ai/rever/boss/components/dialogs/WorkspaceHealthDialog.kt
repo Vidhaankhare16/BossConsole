@@ -88,7 +88,7 @@ internal fun WorkspaceHealthCard(
             Text(
                 text =
                     "Plugins, the browser engine and MCP tools, checked every few seconds. " +
-                        "The same report `boss doctor` prints.",
+                        "The same report the boss doctor command prints.",
                 fontSize = 12.sp,
                 color = colors.textSecondary,
             )

@@ -58,15 +58,19 @@ private const val HEALTH_REFRESH_INTERVAL_MS = 5_000L
  * the sandbox stops after repeated failures is otherwise announced by one toast that disappears,
  * and the next thing the person notices is the plugin simply missing (BossConsole#394).
  *
- * [readReport] is a parameter so tests can supply a report without a running workspace.
+ * [readReport] and [refreshIntervalMs] are parameters so tests can supply a report without a
+ * running workspace, and watch it change without waiting out the real interval.
  */
 @Composable
-internal fun WorkspaceHealthStatusItem(readReport: () -> WorkspaceHealthReport = ::readWorkspaceHealth) {
+internal fun WorkspaceHealthStatusItem(
+    readReport: () -> WorkspaceHealthReport = ::readWorkspaceHealth,
+    refreshIntervalMs: Long = HEALTH_REFRESH_INTERVAL_MS,
+) {
     val windowId = LocalWindowId.current
-    val report by produceState<WorkspaceHealthReport?>(initialValue = null, readReport) {
+    val report by produceState<WorkspaceHealthReport?>(initialValue = null, readReport, refreshIntervalMs) {
         while (true) {
             value = withContext(Dispatchers.IO) { readReport() }
-            delay(HEALTH_REFRESH_INTERVAL_MS)
+            delay(refreshIntervalMs)
         }
     }
     var showDialog by remember { mutableStateOf(false) }

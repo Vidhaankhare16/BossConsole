@@ -186,8 +186,20 @@ object ChromiumAutoDownloader {
      */
     fun isChromiumInstalled(): Boolean = chromiumInstalledAt(recordRepair = ::recordRepairAttempt)
 
-    /** Check the cache without consuming the startup repair attempt. Safe for status queries. */
-    internal fun isChromiumInstalledReadOnly(): Boolean = chromiumInstalledAt(recordRepair = {})
+    /**
+     * Check the cache without consuming the startup repair attempt, and without logging. Safe for
+     * status queries: the status bar asks this every few seconds, and the lines this check writes
+     * announce what startup is about to do ("will re-download"), which a query does not do.
+     */
+    internal fun isChromiumInstalledReadOnly(): Boolean = chromiumInstalledAt(recordRepair = readOnlyInspection)
+
+    /**
+     * The `recordRepair` of an inspection that decides nothing: it records no repair attempt, and
+     * so announces none of the decisions [chromiumInstalledAt] otherwise logs. Identified by
+     * reference rather than by a flag so the check's signature, and the lint baseline keyed on it,
+     * stay as they are.
+     */
+    internal val readOnlyInspection: () -> Unit = {}
 
     internal fun chromiumInstalledAt(
         dir: Path = getChromiumDir(),
@@ -196,6 +208,7 @@ object ChromiumAutoDownloader {
         repairAttempted: () -> Boolean = ::repairAlreadyAttempted,
         recordRepair: () -> Unit,
     ): Boolean {
+        val log = logger.takeUnless { recordRepair === readOnlyInspection }
         if (!dir.toFile().exists()) return false
 
         // Check executable.name exists (required by JxBrowser)
@@ -205,13 +218,13 @@ object ChromiumAutoDownloader {
         // Check version matches current JxBrowser version
         val versionFile = dir.resolve(VERSION_FILE).toFile()
         if (!versionFile.exists()) {
-            logger.debug(LogCategory.BROWSER, "Chromium version file not found, will re-download")
+            log?.debug(LogCategory.BROWSER, "Chromium version file not found, will re-download")
             return false
         }
 
         val installedVersion = versionFile.readText().trim()
         if (installedVersion != requiredVersion) {
-            logger.info(
+            log?.info(
                 LogCategory.BROWSER,
                 "Chromium version mismatch",
                 mapOf(
@@ -232,7 +245,7 @@ object ChromiumAutoDownloader {
             // exists and the permission check below silently never ran.
             val executablePath = dir.resolve("$executableName.app/Contents/MacOS/$executableName").toFile()
             if (executablePath.exists() && !executablePath.canExecute()) {
-                logger.info(LogCategory.BROWSER, "Chromium executable missing execute permission, will re-download")
+                log?.info(LogCategory.BROWSER, "Chromium executable missing execute permission, will re-download")
                 return false
             }
 
@@ -244,14 +257,14 @@ object ChromiumAutoDownloader {
                 // The marker lives outside the engine directory because a
                 // re-download replaces that whole directory.
                 if (repairAttempted()) {
-                    logger.warn(
+                    log?.warn(
                         LogCategory.BROWSER,
                         "Chromium still registers itself as a browser after a re-download; keeping it",
                         mapOf("version" to requiredVersion),
                     )
                 } else {
                     recordRepair()
-                    logger.info(
+                    log?.info(
                         LogCategory.BROWSER,
                         "Cached Chromium still registers itself as a browser, will re-download",
                         mapOf("version" to requiredVersion),

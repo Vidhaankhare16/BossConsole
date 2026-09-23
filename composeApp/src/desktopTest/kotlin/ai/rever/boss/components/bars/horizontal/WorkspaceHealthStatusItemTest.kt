@@ -22,6 +22,7 @@ import kotlinx.coroutines.withTimeout
 import org.junit.Rule
 import org.junit.Test
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.assertEquals
 
 class WorkspaceHealthStatusItemTest {
@@ -73,6 +74,28 @@ class WorkspaceHealthStatusItemTest {
             rule.onAllNodesWithText("2 issues").fetchSemanticsNodes().isNotEmpty()
         }
         rule.onNodeWithText("2 issues").assertExists()
+    }
+
+    @Test
+    fun `the dialog stays open and shows the recovery after the badge hides`() {
+        val current = AtomicReference(WorkspaceHealthReport(findings = listOf(stoppedPlugin)))
+        rule.setContent { WorkspaceHealthStatusItem(readReport = { current.get() }, refreshIntervalMs = 50) }
+        rule.waitUntil(timeoutMillis = 5_000) { rule.onAllNodesWithText("1 issue").fetchSemanticsNodes().isNotEmpty() }
+
+        rule.onNodeWithText("1 issue").performClick()
+        rule.waitUntil(timeoutMillis = 5_000) {
+            rule.onAllNodesWithText("Workspace Health").fetchSemanticsNodes().isNotEmpty()
+        }
+
+        // The problem is fixed from inside the dialog: the next read is healthy.
+        current.set(WorkspaceHealthReport(findings = emptyList()))
+        rule.waitUntil(timeoutMillis = 5_000) {
+            rule.mainClock.advanceTimeBy(100)
+            rule.onAllNodesWithText("No problems found").fetchSemanticsNodes().isNotEmpty()
+        }
+
+        rule.onAllNodesWithText("1 issue").assertCountEquals(0)
+        rule.onNodeWithText("Workspace Health").assertExists()
     }
 
     @Test

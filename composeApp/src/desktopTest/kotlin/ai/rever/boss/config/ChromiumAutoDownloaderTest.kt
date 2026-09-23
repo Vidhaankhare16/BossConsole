@@ -1,5 +1,6 @@
 package ai.rever.boss.config
 
+import ai.rever.boss.utils.logging.BossLogger
 import ai.rever.boss.utils.sha256Of
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Test
@@ -141,6 +142,35 @@ class ChromiumAutoDownloaderTest {
         assertFalse(inspect { marker.writeText("9.2.0") }, "startup must still schedule the repair")
         assertTrue(marker.exists())
         assertTrue(inspect { error("the one-shot repair must not repeat") })
+    }
+
+    @Test
+    fun `a quiet inspection writes nothing to the log`() {
+        // The status bar asks this every few seconds. An engine that still declares browser types
+        // after its one repair is kept, and startup warns about it - a status query must not.
+        target.mkdirs()
+        File(target, "executable.name").writeText("BOSS")
+        File(target, "version.txt").writeText("9.2.0")
+        val plist = File(target, "BOSS.app/Contents/Info.plist")
+        plist.parentFile.mkdirs()
+        plist.writeText("<plist><dict><key>CFBundleURLTypes</key><array/></dict></plist>")
+
+        fun inspect(quiet: Boolean) =
+            ChromiumAutoDownloader.chromiumInstalledAt(
+                dir = target.toPath(),
+                requiredVersion = "9.2.0",
+                isMac = true,
+                repairAttempted = { true },
+                recordRepair = if (quiet) ChromiumAutoDownloader.readOnlyInspection else ({}),
+            )
+
+        fun logged() = BossLogger.getRecentLogs(limit = 1000).count { it.component == "ChromiumAutoDownloader" }
+
+        val before = logged()
+        assertTrue(inspect(quiet = true))
+        assertEquals(before, logged(), "a quiet inspection must not log")
+        assertTrue(inspect(quiet = false))
+        assertEquals(before + 1, logged(), "startup's own inspection still warns, so the count above is real")
     }
 
     // ---- installFromCandidates: source fallback + checksum verification ----
