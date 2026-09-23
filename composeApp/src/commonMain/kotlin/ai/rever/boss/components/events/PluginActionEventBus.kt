@@ -111,8 +111,12 @@ object PluginActionEventBus {
 
     private val retained = MutableStateFlow(0)
 
-    /** How many requests are held but not yet claimed. */
-    val pendingCount: Int get() = synchronized(lock) { pending.size }
+    /**
+     * How many requests are held but not yet claimed. Read from [retained] rather than from
+     * [pending] directly, so this and [pendingCountFlow] are one answer and cannot drift apart;
+     * [retained] is written under [lock] at every change to [pending], so it is already published.
+     */
+    val pendingCount: Int get() = retained.value
 
     /**
      * [pendingCount] as state a prompt can recompose on. A window holds only the request it is

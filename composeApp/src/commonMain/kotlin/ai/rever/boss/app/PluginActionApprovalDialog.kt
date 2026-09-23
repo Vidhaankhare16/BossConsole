@@ -38,13 +38,46 @@ internal fun PluginActionApprovalDialog(
 }
 
 /**
- * How many plugin actions are waiting on the operator, as the prompt's title counts them: the
- * one [queue] is showing plus every request still retained on [PluginActionEventBus].
+ * A window's plugin action prompt: the request [queue] is showing, titled with the backlog, and
+ * consumed before [onConfirmed] is handed it.
+ *
+ * Its own composable rather than inline in `BossAppDialogs` for two reasons. The wiring - which
+ * count the title shows, and that a confirm consumes before it dispatches - is then something a
+ * test can drive, where `BossAppDialogs` needs a whole `BossAppState`; inlined, reverting the
+ * count to the queue's size compiled and failed nothing. And [pluginActionBacklog] returns a value,
+ * so the bus count it collects invalidates the nearest restartable scope: here that is this prompt,
+ * not all of `BossAppDialogs`.
+ */
+@Composable
+internal fun PluginActionApprovalPrompt(
+    queue: PluginActionApprovalQueue,
+    onConfirmed: (PendingPluginAction) -> Unit,
+) {
+    val pending = queue.current ?: return
+    PluginActionApprovalDialog(
+        request = pending,
+        pendingCount = pluginActionBacklog(queue),
+        onDismiss = { queue.consume(pending) },
+        onConfirm = confirm@{
+            // Consume before dispatch; the dialog also calls onDismiss after onConfirm.
+            // A stale callback must never dispatch or dismiss the next request.
+            if (!queue.consume(pending)) return@confirm
+            onConfirmed(pending)
+        },
+    )
+}
+
+/**
+ * The prompt title's count: the request [queue] is showing plus every request still retained on
+ * [PluginActionEventBus] - "this one, and everything queued behind it".
  *
  * The window's own queue alone cannot answer this. A window claims one request at a time
  * (`PluginActionApprovalQueue.canClaim`), so its size is 1 whenever the prompt is on screen,
  * and under a flood of links the rest are on the bus - exactly when the operator most needs to
  * see that more are coming. Collected as state so the title follows the bus as links arrive.
+ *
+ * Not a global total: a request another window has claimed and is showing is off the bus and in
+ * that window's queue, so with two windows prompting each title leaves out the other's.
  */
 @Composable
 internal fun pluginActionBacklog(queue: PluginActionApprovalQueue): Int {

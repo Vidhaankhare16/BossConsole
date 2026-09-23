@@ -58,16 +58,9 @@ class PluginActionApprovalDialogTest {
             repeat(3) {
                 PluginActionEventBus.requestConfirmation("my.plugin", "waiting-$it", emptyMap(), sourceWindowId = null)
             }
-            rule.setContent {
-                queue.current?.let { pending ->
-                    PluginActionApprovalDialog(
-                        request = pending,
-                        pendingCount = pluginActionBacklog(queue),
-                        onDismiss = {},
-                        onConfirm = {},
-                    )
-                }
-            }
+            // The prompt BossAppDialogs actually renders, so this pins the count it passes - not a
+            // count the test assembled itself.
+            rule.setContent { PluginActionApprovalPrompt(queue, onConfirmed = {}) }
             rule.onNodeWithText("Run this plugin action? (4 pending)").assertExists()
 
             // Another window claiming one of the retained requests shrinks the backlog shown here.
@@ -77,6 +70,31 @@ class PluginActionApprovalDialogTest {
             rule.onNodeWithText("Run this plugin action? (3 pending)").assertExists()
         } finally {
             PluginActionEventBus.clearForTest()
+        }
+    }
+
+    @Test
+    fun `the prompt consumes a confirmed request before handing it on, exactly once`() {
+        val queue = PluginActionApprovalQueue()
+        val request = PendingPluginAction("my.plugin", "sync", emptyMap())
+        queue.enqueue(request)
+        val confirmed = mutableListOf<PendingPluginAction>()
+        var stillQueuedAtDispatch: Boolean? = null
+        rule.mainClock.autoAdvance = false
+        rule.setContent {
+            PluginActionApprovalPrompt(queue) { pending ->
+                stillQueuedAtDispatch = queue.current === pending
+                confirmed += pending
+            }
+        }
+        rule.mainClock.advanceTimeBy(600)
+        rule.onNodeWithText("Run action").performClick()
+        rule.mainClock.advanceTimeByFrame()
+
+        rule.runOnIdle {
+            assertEquals(listOf(request), confirmed, "the shown request must be handed on once, and only it")
+            assertEquals(false, stillQueuedAtDispatch, "a request must leave the queue before it is dispatched")
+            assertNull(queue.current)
         }
     }
 }

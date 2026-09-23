@@ -858,24 +858,14 @@ internal fun BossAppDialogs(state: BossAppState) {
     // A plugin action that reached BOSS from outside the operator's own `boss`
     // invocation. Nothing has been dispatched yet: this prompt is the only path
     // from such a link to the plugin's registered handler.
-    state.pluginActionApprovals.current?.let { pending ->
-        PluginActionApprovalDialog(
-            request = pending,
-            pendingCount = pluginActionBacklog(state.pluginActionApprovals),
-            onDismiss = { state.pluginActionApprovals.consume(pending) },
-            onConfirm = confirm@{
-                // Consume before dispatch; the dialog also calls onDismiss after onConfirm.
-                // A stale callback must never dispatch or dismiss the next request.
-                if (!state.pluginActionApprovals.consume(pending)) return@confirm
-                logger.info(
-                    LogCategory.SYSTEM,
-                    "Operator confirmed an externally requested plugin action",
-                    mapOf("windowId" to windowId, "handlerId" to pending.handlerId, "action" to pending.action),
-                )
-                val handled = DeepLinkActionRegistryImpl.dispatch(pending.handlerId, pending.action, pending.params)
-                if (!handled) StatusMessageManager.showMessage("Plugin action was not handled")
-            },
+    PluginActionApprovalPrompt(state.pluginActionApprovals) { pending ->
+        logger.info(
+            LogCategory.SYSTEM,
+            "Operator confirmed an externally requested plugin action",
+            mapOf("windowId" to windowId, "handlerId" to pending.handlerId, "action" to pending.action),
         )
+        val handled = DeepLinkActionRegistryImpl.dispatch(pending.handlerId, pending.action, pending.params)
+        if (!handled) StatusMessageManager.showMessage("Plugin action was not handled")
     }
 
     // Interactive approval dialog for governed MCP tools invoked by an AI agent

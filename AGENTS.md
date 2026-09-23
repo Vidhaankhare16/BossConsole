@@ -1003,11 +1003,13 @@ only while nothing is on screen (`PluginActionApprovalQueue.canClaim`), as the d
 does, so every other request stays retained for the next window. Closing a window after its
 prompt appears can still abandon that one claimed request. Because the window's own queue
 holds only the prompt on screen, the prompt's "(n pending)" counts that one plus every request
-still retained on the bus (`pluginActionBacklog`), so a flood of links is visible. A retained request carries no age
-and does not expire: the registry is bounded and a request reaches its handler only through
-the prompt, so a prompt shown long after the link was clicked still fails closed rather than
-acting on its own. That is a recorded decision, not an oversight - a TTL, or the arrival time
-in the prompt text, would make a late prompt easier for the operator to place.
+still retained on the bus (`pluginActionBacklog`), so a flood of links is visible. The wiring
+lives in `PluginActionApprovalPrompt`, not inline in `BossAppDialogs`, so a test drives the real
+count. A retained request carries no age and does not expire: the registry is bounded and a
+request reaches its handler only through the prompt, so a prompt shown long after the link was
+clicked still fails closed rather than acting on its own. That is a recorded decision, not an
+oversight - a TTL, or the arrival time in the prompt text, would make a late prompt easier for
+the operator to place.
 
 **Single-instance channel**: `SingleInstanceManager` publishes
 `~/.boss/run/single-instance` (owner-only) with the channel endpoint and a token
