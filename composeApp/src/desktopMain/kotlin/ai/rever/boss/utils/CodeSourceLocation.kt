@@ -1,6 +1,9 @@
 package ai.rever.boss.utils
 
+import ai.rever.boss.utils.logging.BossLogger
+import ai.rever.boss.utils.logging.LogCategory
 import java.io.File
+import java.net.URI
 import java.net.URL
 import java.nio.file.Paths
 
@@ -29,8 +32,16 @@ import java.nio.file.Paths
  * and null is the honest answer: `\server\share` is not a path such a host can
  * address. Every caller already treats null as "could not determine the
  * executable" and falls back.
+ *
+ * `localhost` is the exception, because it is not a server: `file://localhost/x`
+ * is the local `/x`. The Unix provider rejects every authority, `localhost`
+ * included, where `URI.path` used to answer correctly, so the redundant host is
+ * dropped first - the same normalisation [OsOpenArguments] applies to file URLs
+ * handed over by a file manager.
  */
 internal object CodeSourceLocation {
+    private val logger = BossLogger.forComponent("CodeSourceLocation")
+
     /** The file [owner] was loaded from, or null when it cannot be determined. */
     fun fileFor(owner: Class<*>): File? =
         fileOf(
@@ -43,15 +54,43 @@ internal object CodeSourceLocation {
      *
      * Separate from [fileFor] so the conversion is testable against a literal URL
      * on any OS, rather than only against wherever the test classes happen to live.
+     *
+     * Each null is logged at debug with the reason, never the path: an install
+     * path carries the Windows account name (see [WindowsProtocolCleanup.maskUserPath]).
      */
     fun fileOf(location: URL?): File? {
         val uri = runCatching { location?.toURI() }.getOrNull()
-        // A class loaded from inside a nested archive ("jar:file:/...!/") or over
-        // the network has no single file behind it; only a plain file URL does.
-        return if (uri == null || !uri.scheme.equals("file", ignoreCase = true)) {
-            null
-        } else {
-            runCatching { Paths.get(uri).toFile() }.getOrNull()
+        return when {
+            uri == null -> {
+                logger.debug(LogCategory.SYSTEM, "No code source URL to resolve")
+                null
+            }
+
+            // A class loaded from inside a nested archive ("jar:file:/...!/") or over
+            // the network has no single file behind it; only a plain file URL does.
+            !uri.scheme.equals("file", ignoreCase = true) -> {
+                logger.debug(LogCategory.SYSTEM, "Code source is not a file URL", mapOf("scheme" to uri.scheme))
+                null
+            }
+
+            else -> {
+                runCatching { Paths.get(withoutLocalhost(uri)).toFile() }
+                    .onFailure {
+                        logger.debug(
+                            LogCategory.SYSTEM,
+                            "Code source URL names no path this host can address",
+                            mapOf("error" to it.javaClass.simpleName),
+                        )
+                    }.getOrNull()
+            }
         }
     }
+
+    /** [uri] without a `localhost` authority, which names this machine rather than a server. */
+    private fun withoutLocalhost(uri: URI): URI =
+        if (uri.authority.equals("localhost", ignoreCase = true)) {
+            URI("file", null, uri.path, null, null)
+        } else {
+            uri
+        }
 }

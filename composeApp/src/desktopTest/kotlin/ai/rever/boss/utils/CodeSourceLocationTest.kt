@@ -88,6 +88,23 @@ class CodeSourceLocationTest {
         )
     }
 
+    /**
+     * `file://localhost/x` is the local `/x`, and `URI.path` answered it correctly.
+     * The Unix provider rejects every authority, `localhost` included, so passing it
+     * through unchanged turned this into null on Linux and macOS.
+     */
+    @Test
+    fun `a localhost authority names this machine`() {
+        val file = File.createTempFile("code-source", ".jar")
+        try {
+            val url = URL("file://localhost" + file.toURI().rawPath)
+            assertEquals("localhost", url.toURI().authority, "the URL under test must carry the authority")
+            assertEquals(file.canonicalFile, CodeSourceLocation.fileOf(url)?.canonicalFile)
+        } finally {
+            file.delete()
+        }
+    }
+
     @Test
     fun `a nested archive URL names no single file`() {
         assertNull(CodeSourceLocation.fileOf(URL("jar:file:/C:/BOSS/app/BOSS.jar!/")))
