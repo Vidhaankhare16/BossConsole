@@ -232,8 +232,8 @@ setlocal DisableDelayedExpansion
 set "arg=%~1"
 
 REM Every read of arg below is inside quotes. cmd substitutes the value into
-REM the line before it parses the line, so an unquoted read lets an & in the
-REM argument (a file named R&D.txt, say) end the command and run the rest as
+REM the line before it parses the line, so an unquoted read lets an ampersand
+REM in the argument, say a file named R and D.txt, end the command and run the rest as
 REM a second one. The checks used to echo arg into findstr, which did exactly
 REM that on every line; they are now plain string tests with no subshell.
 REM (No percent-wrapped arg in these comments: cmd expands it in REM lines.)
